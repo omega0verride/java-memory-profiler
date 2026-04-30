@@ -5,6 +5,8 @@ this tool is designed to be **driven from your code** — you decide exactly whe
 to trigger GC, drop markers, measure scopes, and capture heap dumps, giving you
 precise, repeatable measurements at the points that matter.
 
+> **Disclaimer:** This is a vibe-coded project — but highly functional and reliable.
+
 ![Live web UI overview](screenshots/overview.png)
 
 > **📂 [See the full Demo](src/main/java/com/toro/al/memprofiler/Demo.java)** — a comprehensive working example that exercises every feature.
