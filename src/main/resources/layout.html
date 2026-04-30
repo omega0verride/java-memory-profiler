@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Object Layout — Java Memory Profiler</title>
+<link rel="stylesheet" href="/web/styles.css">
+<style>
+  body { overflow: auto; }
+  .layout-page {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 24px 28px;
+  }
+  .layout-page header {
+    background: none;
+    border-bottom: 1px solid var(--grid);
+    padding: 0 0 12px;
+    margin-bottom: 20px;
+    min-height: unset;
+  }
+  .layout-page header h1 { font-size: 15px; }
+  .layout-page header .sub { color: var(--mute); font-size: 12px; font-weight: normal; }
+
+  <!-- Tabs -->
+  .layout-tabs {
+    display: flex;
+    gap: 0;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--grid);
+  }
+  .layout-tab {
+    padding: 8px 16px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    color: var(--mute);
+    border-bottom: 2px solid transparent;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .layout-tab:hover { color: var(--fg); }
+  .layout-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  /* Browse panel */
+  .layout-browse-wrap { margin-bottom: 12px; }
+  .layout-search-input {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--grid);
+    border-radius: 4px;
+    padding: 8px 12px;
+    font-size: 13px;
+    color: var(--fg);
+    font-family: Consolas, Menlo, monospace;
+    outline: none;
+    margin-bottom: 8px;
+  }
+  .layout-search-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(78, 161, 255, 0.15);
+  }
+  .layout-search-input::placeholder { color: var(--mute-2); }
+  .layout-class-list {
+    max-height: 320px;
+    overflow-y: auto;
+    border: 1px solid var(--grid);
+    border-radius: 4px;
+  }
+  .layout-class-item {
+    padding: 6px 12px;
+    font-size: 12px;
+    font-family: Consolas, Menlo, monospace;
+    cursor: pointer;
+    color: var(--fg);
+    border-bottom: 1px solid var(--grid);
+    transition: background 0.1s;
+  }
+  .layout-class-item:last-child { border-bottom: none; }
+  .layout-class-item:hover { background: rgba(78, 161, 255, 0.08); }
+  .layout-browse-hint {
+    font-size: 11px;
+    color: var(--mute);
+    margin-top: 4px;
+  }
+
+  /* Source input */
+  .layout-go-btn {
+    flex-shrink: 0;
+    width: auto;
+    min-width: 90px;
+    padding: 8px 14px;
+    font-size: 13px;
+  }
+
+  /* Source tab */
+  .layout-source-wrap { margin-bottom: 12px; }
+  .layout-source-editor {
+    width: 100%;
+    min-height: 200px;
+    max-height: 400px;
+    background: var(--bg);
+    border: 1px solid var(--grid);
+    border-radius: 4px;
+    padding: 10px 12px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--fg);
+    font-family: Consolas, Menlo, monospace;
+    outline: none;
+    resize: vertical;
+    tab-size: 4;
+  }
+  .layout-source-editor:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(78, 161, 255, 0.15);
+  }
+  .layout-source-editor::placeholder { color: var(--mute-2); }
+  .layout-source-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .layout-source-hints {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .layout-source-hint {
+    font-size: 11px;
+    color: var(--mute);
+    line-height: 1.4;
+  }
+  .layout-source-buttons {
+    display: flex;
+    gap: 8px;
+  }
+  .layout-copy-btn {
+    padding: 8px 12px;
+    font-size: 12px;
+    background: var(--bg-3);
+    color: var(--fg);
+    border: 1px solid var(--grid);
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .layout-copy-btn:hover { border-color: var(--accent); }
+  .layout-copy-btn:disabled { opacity: 0.4; cursor: default; }
+
+  /* Samples */
+  .layout-samples {
+    margin-top: 10px;
+  }
+  .layout-samples-label {
+    font-size: 11px;
+    color: var(--mute);
+    margin-bottom: 6px;
+  }
+  .layout-samples-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .layout-sample-chip {
+    font-size: 11px;
+    padding: 4px 10px;
+    background: var(--bg-3);
+    border: 1px solid var(--grid);
+    border-radius: 12px;
+    cursor: pointer;
+    color: var(--fg);
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .layout-sample-chip:hover {
+    border-color: var(--accent);
+    background: rgba(78, 161, 255, 0.08);
+  }
+
+  /* Shared result styles */
+  .layout-error {
+    background: rgba(255, 110, 110, 0.1);
+    border: 1px solid rgba(255, 110, 110, 0.3);
+    color: var(--end);
+    font-size: 12px;
+    padding: 8px 10px;
+    border-radius: 4px;
+    margin-bottom: 12px;
+    font-family: Consolas, Menlo, monospace;
+    white-space: pre-wrap;
+  }
+
+  .layout-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+
+  .layout-bar {
+    display: flex;
+    height: 24px;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 6px;
+    border: 1px solid var(--grid);
+  }
+  .layout-bar-seg {
+    min-width: 2px;
+    transition: width 0.2s;
+  }
+  .layout-bar-seg + .layout-bar-seg {
+    border-left: 1px solid var(--bg);
+  }
+  .layout-bar-legend {
+    display: flex;
+    gap: 14px;
+    margin-bottom: 16px;
+    font-size: 11px;
+    color: var(--mute);
+  }
+  .layout-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .layout-legend-sw {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    display: inline-block;
+  }
+
+  .layout-table {
+    border: 1px solid var(--grid);
+    border-radius: 4px;
+    overflow: hidden;
+    font-size: 12px;
+    font-family: Consolas, Menlo, monospace;
+  }
+  .layout-table-header {
+    display: flex;
+    background: var(--bg-3);
+    padding: 6px 10px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--mute);
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-weight: 600;
+  }
+  .layout-row {
+    display: flex;
+    padding: 4px 10px;
+    border-top: 1px solid var(--grid);
+    transition: background 0.1s;
+  }
+  .layout-row:hover { background: rgba(78, 161, 255, 0.04); }
+  .layout-row.padding { color: var(--mute-2); }
+  .lt-off { width: 52px; flex-shrink: 0; text-align: right; padding-right: 10px; }
+  .lt-size { width: 40px; flex-shrink: 0; text-align: right; padding-right: 10px; }
+  .lt-kind { width: 68px; flex-shrink: 0; }
+  .lt-desc { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lt-type { color: var(--accent); margin-right: 6px; }
+  .lt-name { color: var(--fg); }
+  .lt-class { color: var(--mute); font-size: 11px; margin-left: 6px; }
+  .lt-muted { color: var(--mute); font-style: italic; }
+  .layout-row .pill {
+    font-size: 9px;
+    padding: 1px 6px;
+    border-radius: 6px;
+  }
+  .pill.header { background: #4ea1ff; }
+  .pill.field { background: #37c26a; }
+  .pill.padding { background: #5a6478; color: var(--fg); }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "vue": "https://unpkg.com/vue@3.4.38/dist/vue.esm-browser.prod.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="app" class="layout-page">
+  <header>
+    <h1>Object Layout <span class="sub">— Java Memory Profiler</span></h1>
+  </header>
+
+  <div class="layout-tabs">
+    <span class="layout-tab" :class="{ active: activeTab === 'source' }" @click="activeTab = 'source'">Write Source</span>
+    <span class="layout-tab" :class="{ active: activeTab === 'browse' }" @click="activeTab = 'browse'">Browse Loaded Classes</span>
+  </div>
+
+  <div v-if="activeTab === 'browse'">
+    <div class="layout-browse-wrap">
+      <input
+        class="layout-search-input"
+        v-model="classSearch"
+        @input="onSearchInput"
+        placeholder="Search loaded classes (e.g. java.util.HashMap, MyService)..."
+        spellcheck="false"
+      >
+      <div v-if="classError" class="layout-error">{{ classError }}</div>
+      <div v-if="classLoading" class="layout-browse-hint">Searching...</div>
+      <div v-else-if="classList.length === 0 && classSearch.length >= 2" class="layout-browse-hint">No classes found matching "{{ classSearch }}"</div>
+      <div v-if="classList.length > 0" class="layout-class-list">
+        <div v-for="c in classList" :key="c" class="layout-class-item" @click="analyzeClass(c)">{{ c }}</div>
+      </div>
+      <div v-if="classList.length === 0 && classSearch.length < 2" class="layout-browse-hint">Type at least 2 characters to search loaded classes from the running JVM.</div>
+      <button class="layout-copy-btn" @click="copyMarkdown" :disabled="!result" title="Copy layout as Markdown">Copy Markdown</button>
+    </div>
+  </div>
+
+  <div v-if="activeTab === 'source'">
+    <div class="layout-source-wrap">
+      <textarea
+        ref="sourceEl"
+        class="layout-source-editor"
+        v-model="sourceCode"
+        placeholder="Paste your fields here, e.g.&#10;&#10;private long id;&#10;private String name;&#10;private int count;&#10;private boolean active;"
+        :disabled="loading"
+        spellcheck="false"
+        @keydown.ctrl.enter.prevent="compileSource"
+      ></textarea>
+      <div class="layout-source-actions">
+        <div class="layout-source-hints">
+          <span class="layout-source-hint">Paste field definitions and click Analyze. <kbd style="background:var(--bg-3);border:1px solid var(--grid-2);border-radius:3px;padding:0 4px;font-size:10px;font-family:Consolas,Menlo,monospace;">Ctrl+Enter</kbd></span>
+          <span class="layout-source-hint">Tip: Use <code style="background:var(--bg-3);padding:0 3px;border-radius:2px;font-size:11px;">Object</code> for references to other classes/objects.</span>
+        </div>
+        <div class="layout-source-buttons">
+          <button class="gc-trigger-btn layout-go-btn" @click="compileSource" :disabled="loading || !sourceCode.trim()">
+            {{ loading ? 'Analyzing...' : 'Analyze' }}
+          </button>
+          <button class="layout-copy-btn" @click="copyMarkdown" :disabled="!result" title="Copy layout as Markdown">Copy Markdown</button>
+        </div>
+      </div>
+      <div class="layout-samples">
+        <div class="layout-samples-label">Samples:</div>
+        <div class="layout-samples-list">
+          <span class="layout-sample-chip" v-for="s in samples" :key="s.name" @click="loadSample(s)">{{ s.name }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div v-if="error" class="layout-error">{{ error }}</div>
+
+  <div v-if="result" class="layout-result">
+    <div class="layout-summary-grid">
+      <div class="metric"><div class="k">shallow size</div><div class="v">{{ result.shallowSize }}<span class="unit">B</span></div></div>
+      <div class="metric"><div class="k">header</div><div class="v">{{ result.headerSize }}<span class="unit">B</span></div></div>
+      <div class="metric"><div class="k">fields</div><div class="v">{{ result.fieldsSize }}<span class="unit">B</span></div></div>
+      <div class="metric"><div class="k">padding</div><div class="v">{{ result.paddingSize }}<span class="unit">B</span></div></div>
+    </div>
+
+    <div class="layout-bar">
+      <div v-for="(e, i) in result.entries" :key="i"
+           class="layout-bar-seg"
+           :style="segStyle(e)"
+           :title="segTooltip(e)">
+      </div>
+    </div>
+    <div class="layout-bar-legend">
+      <span class="layout-legend-item"><span class="layout-legend-sw" style="background:#4ea1ff"></span>header</span>
+      <span class="layout-legend-item"><span class="layout-legend-sw" style="background:#37c26a"></span>field</span>
+      <span class="layout-legend-item"><span class="layout-legend-sw" style="background:#5a6478"></span>padding</span>
+    </div>
+
+    <div class="layout-table">
+      <div class="layout-table-header">
+        <span class="lt-off">Offset</span>
+        <span class="lt-size">Size</span>
+        <span class="lt-kind">Kind</span>
+        <span class="lt-desc">Description</span>
+      </div>
+      <div v-for="(e, i) in result.entries" :key="i" class="layout-row" :class="e.kind">
+        <span class="lt-off">{{ e.offset }}</span>
+        <span class="lt-size">{{ e.size }}</span>
+        <span class="lt-kind"><span class="pill" :class="e.kind">{{ e.kind }}</span></span>
+        <span class="lt-desc" v-if="e.kind === 'field'">
+          <span class="lt-type">{{ e.fieldType }}</span>
+          <span class="lt-name">{{ e.fieldName }}</span>
+          <span class="lt-class" v-if="e.declaringClass !== result.className">({{ shortName(e.declaringClass) }})</span>
+        </span>
+        <span class="lt-desc lt-muted" v-else-if="e.kind === 'header'">object header (mark + klass)</span>
+        <span class="lt-desc lt-muted" v-else>alignment/padding gap</span>
+      </div>
+    </div>
+  </div>
+</div>
+<script type="module" src="/web/layout-app.js"></script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./gradlew.bat compileJava --console=plain)",
+      "Bash(./gradlew compileJava)",
+      "Bash(./gradlew jar *)",
+      "Bash(unzip -l build/libs/java-memory-profiler-1.0.0.jar)",
+      "Bash(unzip -p build/libs/java-memory-profiler-1.0.0.jar web/chart.js)"
+    ]
+  }
+}

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Java Memory Profiler</title>
+<link rel="stylesheet" href="/web/styles.css">
+<script type="importmap">
+{
+  "imports": {
+    "vue": "https://unpkg.com/vue@3.4.38/dist/vue.esm-browser.prod.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Java Memory Profiler</h1>
+    <span class="status" :class="state.status.cls">{{ state.status.text }}</span>
+    <span class="proc" :title="procTitle">
+      <span class="pid-label">PID</span>
+      <span class="pid-value">{{ pidLabel }}</span>
+      <template v-if="state.processName">
+        <span class="sep">·</span>
+        <span class="proc-name">{{ state.processName }}</span>
+      </template>
+    </span>
+    <span class="spacer"></span>
+  </header>
+  <main>
+    <aside class="left-aside">
+      <app-summary></app-summary>
+    </aside>
+    <div class="chart-col">
+      <app-hover-header></app-hover-header>
+      <div id="chartWrap">
+        <canvas id="chart"></canvas>
+        <app-overlay></app-overlay>
+        <app-context-menu></app-context-menu>
+        <app-hover-card></app-hover-card>
+      </div>
+    </div>
+    <aside>
+      <app-selected></app-selected>
+      <app-events></app-events>
+    </aside>
+  </main>
+  <footer>
+    <div class="footer-tips">
+      <span class="footer-tip"><kbd>Scroll</kbd> zoom time</span>
+      <span class="footer-tip"><kbd>Shift+Scroll</kbd> zoom memory</span>
+      <span class="footer-tip"><kbd>Drag</kbd> pan</span>
+      <span class="footer-tip"><kbd>Click</kbd> select point</span>
+        <span class="footer-tip"><kbd>Shift+Click</kbd> range select</span>
+        <span class="footer-tip"><kbd>Esc</kbd> deselect</span>
+        <span class="footer-tip"><kbd>Ctrl+Click</kbd> set GC line</span>
+    </div>
+    <div class="footer-file">
+      <div class="footer-path" :title="state.jsonlPath || 'Memory only'">
+        <span class="footer-label">JSONL:</span>
+        <a v-if="state.jsonlPath" href="#" class="footer-link" @click.prevent="onOpenJsonl">{{ state.jsonlPath }}</a>
+        <span v-else class="footer-value">(memory only)</span>
+      </div>
+      <button class="footer-btn" @click="onDownload">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+        </svg>
+        Download JSONL
+      </button>
+    </div>
+  </footer>
+</div>
+<script type="module" src="/web/app.js"></script>
+</body>
+</html>
