@@ -101,12 +101,18 @@ async function setAutoGc_({ nearPeak, threshold, thresholdMB }) {
   await fetch('/autogc?' + params.toString());
 }
 
-function openLocation_(loc) {
+// Opens a mark's source location ("com/acme/Foo.java:42") in the IDE, at the line.
+// Resolves to { ok, text }: what the server did, or why it could not.
+async function openLocation_(loc) {
   const path = String(loc || '');
-  if (!path) return;
-  fetch('/open?path=' + encodeURIComponent(path))
-    .then(r => { if (!r.ok) r.text().then(t => console.error('open failed:', r.status, t)); })
-    .catch(e => console.error('open error:', e));
+  if (!path) return { ok: false, text: 'no location recorded' };
+  try {
+    const r = await fetch('/open?path=' + encodeURIComponent(path));
+    const text = await r.text();
+    return { ok: r.ok, text };
+  } catch (e) {
+    return { ok: false, text: 'request failed: ' + (e && e.message ? e.message : e) };
+  }
 }
 
 function openJsonlFile_(path) {
@@ -140,8 +146,14 @@ async function listClasses_(filter) {
   return r.json();
 }
 
-async function getClassSource_(className) {
-  const r = await fetch('/class/source?class=' + encodeURIComponent(className));
+// file ("com/acme/Foo.java") and line are the mark's; the server answers with
+// the line of the returned text to highlight (mapped when the code is decompiled).
+async function getClassSource_(className, file, line) {
+  const params = new URLSearchParams();
+  params.set('class', className);
+  if (file) params.set('file', file);
+  if (line) params.set('line', line);
+  const r = await fetch('/class/source?' + params.toString());
   return r.json();
 }
 

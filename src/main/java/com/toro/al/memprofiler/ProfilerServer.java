@@ -28,6 +28,7 @@ public class ProfilerServer {
   private final int port;
   private String cachedHtml;
   private volatile MemoryProfiler exports;
+  private volatile SourceOpener sourceOpener = new SourceOpener(null, null);
 
   public ProfilerServer(int port, DataStore store) throws IOException {
     this(port, store, null, null, new String[0]);
@@ -62,6 +63,9 @@ public class ProfilerServer {
 
   /** Lets {@code /export/*} use the profiler's title, sampling interval and export options. */
   void setExports(MemoryProfiler profiler) { this.exports = profiler; }
+
+  /** How "Open in IDE" opens a source file at its line (default: auto-detect IntelliJ / VS Code). */
+  void setSourceOpener(SourceOpener opener) { if (opener != null) this.sourceOpener = opener; }
 
   /** Stops the server and its worker threads, so a JVM whose work is done can exit. */
   public void stop() {
@@ -370,13 +374,17 @@ public class ProfilerServer {
 
     int colon = path.lastIndexOf(':');
     String bare = path;
+    int line = 0;
     if (colon > 0) {
       String tail = path.substring(colon + 1);
-      boolean allDigits = !tail.isEmpty();
+      boolean allDigits = !tail.isEmpty() && tail.length() < 10;
       for (int i = 0; i < tail.length(); i++) {
         if (!Character.isDigit(tail.charAt(i))) { allDigits = false; break; }
       }
-      if (allDigits) bare = path.substring(0, colon);
+      if (allDigits) {
+        bare = path.substring(0, colon);
+        line = Integer.parseInt(tail);
+      }
     }
 
     File f = new File(bare);
@@ -400,11 +408,16 @@ public class ProfilerServer {
       return;
     }
     try {
-      Headless.markAwtUsed();
-      Desktop.getDesktop().open(f);
-      write(ex, 200, "text/plain", "ok");
+      if (line > 0 || f.getName().endsWith(".java")) {
+        // a mark's source location: the IDE, at the line
+        write(ex, 200, "text/plain", sourceOpener.open(f, line));
+      } else {
+        Headless.markAwtUsed();
+        Desktop.getDesktop().open(f);
+        write(ex, 200, "text/plain", "ok");
+      }
     } catch (Throwable t) {
-      write(ex, 500, "text/plain", t.getMessage());
+      write(ex, 500, "text/plain", t.getMessage() != null ? t.getMessage() : t.toString());
     }
   }
 
@@ -540,8 +553,11 @@ public class ProfilerServer {
       write(ex, 400, "application/json", "{\"error\":\"missing 'class' parameter\"}");
       return;
     }
+    String file = parseString(q, "file");
+    long line = parseLong(q, "line", 0);
     try {
-      ClassSourceService.SourceResult result = ClassSourceService.getSource(className);
+      ClassSourceService.SourceResult result = ClassSourceService.getSource(className, file,
+          (int) Math.max(0, Math.min(Integer.MAX_VALUE, line)), sourceRoots);
       write(ex, 200, "application/json", result.toJson());
     } catch (ClassNotFoundException e) {
       write(ex, 404, "application/json", "{\"error\":\"class not found: " +

@@ -1,5 +1,5 @@
 import { computed, ref, watchEffect, onMounted, onUnmounted } from 'vue';
-import { state, clearSelection, selectPoint, ensureVisible } from '../state.js';
+import { state, clearSelection, selectPoint, ensureVisible, toast } from '../state.js';
 import { openLocation, downloadPngExport } from '../api.js';
 import { fmtTs, kindClass, SNAPSHOT_TIP } from '../util.js';
 
@@ -194,8 +194,8 @@ export default {
         <div v-if="sel.location" class="selected-location">
           <div class="location-path">{{ sel.location }}</div>
           <template v-if="!state.snapshot">
-            <a href="#" class="location-link" @click.prevent="openIde">Open in IDE</a>
-            <a href="#" class="location-link" @click.prevent="viewSource" title="View decompiled source of this class">View Source</a>
+            <a href="#" class="location-link" @click.prevent="openIde" title="Open the file at this line in IntelliJ IDEA or VS Code (Config.sourceOpener)">Open in IDE</a>
+            <a href="#" class="location-link" @click.prevent="viewSource" title="Show the source at this line (decompiled when the file is not under sourceRoots)">View Source</a>
           </template>
           <template v-else>
             <span class="location-link disabled" :title="snapshotTip">Open in IDE</span>
@@ -294,9 +294,10 @@ export default {
     const miniCanvas = ref(null);
 
     const deselect = () => { clearSelection(); };
-    const openIde = () => {
+    const openIde = async () => {
       if (!sel.value) return;
-      openLocation(sel.value.sourceFile || sel.value.location);
+      const res = await openLocation(sel.value.sourceFile || sel.value.location);
+      if (res) toast(res.text, res.ok ? 3000 : 7000, !res.ok);
     };
     const viewSource = () => {
       if (!sel.value || !sel.value.location) return;
@@ -306,9 +307,12 @@ export default {
       const line = lineMatch ? lineMatch[1] : '';
       const lastDot = noLine.lastIndexOf('.');
       const className = lastDot > 0 ? noLine.substring(0, lastDot) : noLine;
-      let url = '/source.html?class=' + encodeURIComponent(className);
-      if (line) url += '&line=' + line;
-      window.open(url, '_blank');
+      const params = new URLSearchParams();
+      params.set('class', className);
+      if (line) params.set('line', line);
+      // the recorded file ("com/acme/Foo.java:42"): the real source when sourceRoots find it
+      if (sel.value.sourceFile) params.set('file', sel.value.sourceFile.replace(/:\d+$/, ''));
+      window.open('/source.html?' + params.toString(), '_blank');
     };
 
     const canNavigate = computed(() => !!sel.value);

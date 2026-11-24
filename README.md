@@ -15,6 +15,8 @@ precise, repeatable measurements at the points that matter.
 > java -cp java-memory-profiler-1.0.0.jar com.toro.al.memprofiler.Demo
 > java -jar java-memory-profiler-1.0.0.jar --export docs   # headless: writes docs/demo-profile.html and .png
 > ```
+>
+> **AI agents:** read [AGENTS.md](AGENTS.md). It is also in the jar: `java -jar java-memory-profiler-1.0.0.jar agents`.
 
 - **Continuous sampling** — a daemon thread records heap usage every N ms.
 - **GC notifications** — every JVM garbage collection is captured as a `GC` event (name, cause, pause duration, bytes reclaimed) via `GarbageCollectorMXBean` notifications, so nothing is missed between samples.
@@ -131,8 +133,10 @@ MemoryProfiler.start(MemoryProfiler.Config.defaults()
     .gcListener(true)                // default true; set false to skip GC notifications
     .autoGcNearPeak(true)            // auto-GC when heap nears observed peak (default false)
     .autoGcThreshold(true, 1024)     // auto-GC when heap exceeds threshold in MB (default false)
-    .sourceRoots("src/main/java",    // resolve class locations to files for "Open in IDE"
-                 "src/test/java")    //   and source snippets in HTML exports
+    .sourceRoots("src/main/java",    // resolve class locations to files for "Open in IDE",
+                 "src/test/java")    //   "View Source" and source snippets in HTML exports
+    .sourceOpener("auto")            // "Open in IDE": auto (default), intellij, vscode, system,
+                                     //   or a command such as "subl {file}:{line}"
     .forceGc(3, 80)                  // System.gc() loop used by markGc/scopeGc
     .title("Cache loader")           // chart title for exports and the JSONL (default: process name)
     .subtitle("variant B")           // chart subtitle
@@ -281,7 +285,9 @@ method names 1:1.**
 | `autoGcNearPeak` | `false` | Trigger `System.gc()` when heap nears the observed peak. |
 | `autoGcThreshold` | `false` | Trigger `System.gc()` when heap exceeds a fixed MB threshold. |
 | `autoGcThresholdMB` | —   | Threshold in MB for `autoGcThreshold`.                     |
-| `sourceRoots`  | none    | Source roots separated by `;` ("Open in IDE", snippets in HTML exports). |
+| `sourceRoots`  | none    | Source roots separated by `;` ("Open in IDE", "View Source", snippets in HTML exports). |
+| `sourceOpener` | `auto`  | How "Open in IDE" opens a file at its line: `auto`, `intellij`, `vscode`, `system`, or a command with `{file}` and `{line}`. |
+| `sourceOpenerPath` | auto | Launcher for `intellij` / `vscode` when it is not found automatically. |
 | `title`        | process | Chart title for exports.                                   |
 | `subtitle`     | none    | Chart subtitle for exports.                                |
 | `exportHtml`   | none    | Write an interactive HTML export here when the JVM exits.  |
@@ -372,18 +378,32 @@ Opens at the URL printed on startup (`http://localhost:<port>/`).
 - **GC** triggers `System.gc()` remotely.
 - **download jsonl** streams the JSONL file back to the browser.
 - Click any point or event to see its full details (timestamp, thread,
-  location, delta, duration). The **open in IDE** link asks the JVM's
-  desktop handler to open the source file. The link only works when you
-  configure source roots so the profiler can map a class location like
-  `com.example.Import.parse:88` to a real file:
+  location, delta, duration), with two links for the mark's source line:
 
   ![Event details and filters](screenshots/events-panel.png)
 
+  - **Open in IDE** opens the file in your IDE at the mark's line. It needs
+    source roots, so the profiler can map a location like
+    `com.example.Import.parse:88` to a real file. By default (`auto`) it uses
+    IntelliJ IDEA when its launcher is found (on the PATH, JetBrains Toolbox
+    scripts, snap, or the usual install folders), else VS Code, else the OS
+    default app (which cannot jump to a line). A toast says what was opened,
+    or why not.
+  - **View Source** shows the class in a new tab, scrolled to the mark's line
+    and highlighted. Under the source roots it shows the real file; otherwise
+    it decompiles the class (CFR) and highlights the statement the line
+    compiled to ("source line 88 → line 41").
+
   ```java
-  MemoryProfiler.start(c -> c.sourceRoots(
-      "src/main/java",
-      "src/test/java"));
+  MemoryProfiler.start(c -> c
+      .sourceRoots("src/main/java", "src/test/java")
+      .sourceOpener("vscode"));            // or "intellij", "system", "subl {file}:{line}"
   ```
+
+  The IDE is a personal choice, so it can also be set per developer without a
+  code change: `-Dmemprofiler.sourceOpener=intellij` (and
+  `-Dmemprofiler.sourceOpenerPath=/path/to/idea.sh` when the launcher is not
+  found), or the `sourceOpener` agent argument.
 - **Range select** — Shift+Click two points on the chart (or toggle the
   Range Select tool in the left panel) to analyze a range: memory delta,
   min/max/avg used, duration, and event counts within the window.

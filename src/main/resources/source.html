@@ -95,7 +95,9 @@
   }
   .source-code {
     margin: 0;
-    padding: 12px 16px;
+    padding: 12px 0;
+    width: max-content;
+    min-width: 100%;
     font-size: 12px;
     line-height: 1.6;
     font-family: Consolas, Menlo, monospace;
@@ -113,9 +115,26 @@
     border-right: 1px solid var(--grid);
     margin-right: 12px;
   }
+  .source-code > span { display: block; padding: 0 16px; }
   .source-code .line-highlight {
-    background: rgba(78, 161, 255, 0.1);
+    background: var(--accent-soft);
+    box-shadow: inset 3px 0 0 var(--mark);
   }
+  .source-code .line-highlight .line-num { color: var(--mark); font-weight: 600; }
+  .source-meta .source-file {
+    font-family: Consolas, Menlo, monospace;
+    color: var(--mute);
+  }
+  .source-meta .line-chip {
+    font-family: Consolas, Menlo, monospace;
+    color: var(--mark);
+    text-decoration: none;
+    padding: 1px 8px;
+    border-radius: 8px;
+    border: 1px solid var(--grid-2);
+  }
+  .source-meta .line-chip:hover { background: var(--hover-bg); }
+  .source-meta .line-note { color: var(--mute); }
 
   .source-error {
     background: rgba(255, 110, 110, 0.1);
@@ -173,6 +192,9 @@
     <div class="source-meta">
       <span class="class-name">{{ result.className }}</span>
       <span class="origin-badge" :class="result.origin">{{ result.origin }}</span>
+      <span v-if="result.file" class="source-file" :title="'Found under the configured sourceRoots or on the classpath'">{{ result.file }}</span>
+      <a v-if="highlightLine" href="#" class="line-chip" title="Scroll to the highlighted line" @click.prevent="scrollToHighlight">{{ lineNote }}</a>
+      <span v-else-if="lineNote" class="line-note">{{ lineNote }}</span>
     </div>
     <div class="source-code-wrap">
       <pre class="source-code"><span v-for="(line, i) in lines" :key="i" :class="{ 'line-highlight': highlightLine === i + 1 }"><span class="line-num">{{ i + 1 }}</span>{{ line }}

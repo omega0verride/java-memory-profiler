@@ -1,5 +1,5 @@
 import { createApp, computed, watch } from 'vue';
-import { state, selectPoint, clearSelection, fitAll, getTimeRange } from './state.js';
+import { state, selectPoint, clearSelection, fitAll, getTimeRange, toast } from './state.js';
 import * as api from './api.js';
 import { mountChart, setContextMenuHandler, ensureVisible } from './chart.js';
 import MarksTable from './components/MarksTable.js';
@@ -125,12 +125,6 @@ function snapshotChips(m) {
   return chips;
 }
 
-let toastTimer = null;
-function toast(text, ms = 2500, error = false) {
-  state.toast = { text, error };
-  if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = ms ? setTimeout(() => { state.toast = null; }, ms) : null;
-}
 
 // ---- theme: dark by default live; a snapshot follows the OS unless the viewer picked one ----
 function readStoredTheme() {

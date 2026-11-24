@@ -137,6 +137,14 @@ export function selectRangePoint(p) {
   }
 }
 
+let toastTimer = null;
+/** Shows a short message at the bottom of the page; {@code ms = 0} keeps it until the next one. */
+export function toast(text, ms = 2500, error = false) {
+  state.toast = { text, error };
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = ms ? setTimeout(() => { state.toast = null; }, ms) : null;
+}
+
 export function clearSelection() {
   state.selected = null;
   state.rangeStart = null;

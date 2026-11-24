@@ -112,30 +112,54 @@ public final class MemoryProfiler {
     }
   }
 
-  /** True when the profiler classes are on the runtime classpath. */
+  /**
+   * Whether the profiler jar is on the runtime classpath.
+   *
+   * @return true when the profiler classes can be loaded
+   */
   public static boolean isAvailable() {
     return impl() != null;
   }
 
-  /** True when the profiler is available and started. */
+  /**
+   * Whether the profiler is available and started.
+   *
+   * @return true when calls through this facade are recorded
+   */
   public static boolean isRunning() {
     Impl i = impl();
     return i != null && Boolean.TRUE.equals(call(i.isRunning));
   }
 
-  /** {@code MemoryProfiler.mark(label)}: a cheap mark (no GC). */
+  /**
+   * {@code MemoryProfiler.mark(label)}: a cheap mark (no GC) at the caller's
+   * location. No-op when the profiler is absent or not running.
+   *
+   * @param label text shown in the chart, the events list and the marks table
+   */
   public static void mark(String label) {
     Impl i = impl();
     if (i != null) call(i.mark, label);
   }
 
-  /** {@code MemoryProfiler.markGc(label)}: forced GC first, then a mark (retained heap). */
+  /**
+   * {@code MemoryProfiler.markGc(label)}: forced GC first, then a mark (retained
+   * heap) at the caller's location. No-op when the profiler is absent or not running.
+   *
+   * @param label text shown in the chart, the events list and the marks table
+   */
   public static void markGc(String label) {
     Impl i = impl();
     if (i != null) call(i.markGc, label);
   }
 
-  /** {@code MemoryProfiler.scope(label)}. */
+  /**
+   * {@code MemoryProfiler.scope(label)}: a cheap scope (no GC); close it to
+   * record the end, ideally with try-with-resources.
+   *
+   * @param label name of the scope band in the chart
+   * @return the open scope; a no-op scope when the profiler is absent or not running
+   */
   public static Scope scope(String label) {
     Impl i = impl();
     if (i == null) return NOOP;
@@ -143,7 +167,13 @@ public final class MemoryProfiler {
     return s instanceof AutoCloseable ? new Scope((AutoCloseable) s) : NOOP;
   }
 
-  /** {@code MemoryProfiler.scopeGc(label)}: forced GC at entry and exit. */
+  /**
+   * {@code MemoryProfiler.scopeGc(label)}: forced GC at entry and exit, so the
+   * delta is retained heap.
+   *
+   * @param label name of the scope band in the chart
+   * @return the open scope; a no-op scope when the profiler is absent or not running
+   */
   public static Scope scopeGc(String label) {
     Impl i = impl();
     if (i == null) return NOOP;
@@ -151,25 +181,47 @@ public final class MemoryProfiler {
     return s instanceof AutoCloseable ? new Scope((AutoCloseable) s) : NOOP;
   }
 
-  /** {@code MemoryProfiler.referenceLine(mb, label)}. */
+  /**
+   * {@code MemoryProfiler.referenceLine(mb, label)}: a dashed horizontal line in
+   * the chart and the exports. No-op when the profiler is absent or not running.
+   *
+   * @param mb    the line's height in MB
+   * @param label text drawn on the line
+   */
   public static void referenceLine(long mb, String label) {
     Impl i = impl();
     if (i != null) call(i.referenceLine, mb, label);
   }
 
-  /** {@code MemoryProfiler.title(title)}. */
+  /**
+   * {@code MemoryProfiler.title(title)}: the chart title of the exports. No-op
+   * when the profiler is absent or not running.
+   *
+   * @param title the chart title
+   */
   public static void title(String title) {
     Impl i = impl();
     if (i != null) call(i.title, title);
   }
 
-  /** {@code MemoryProfiler.title(title, subtitle)}. */
+  /**
+   * {@code MemoryProfiler.title(title, subtitle)}: the chart title and subtitle
+   * of the exports. No-op when the profiler is absent or not running.
+   *
+   * @param title    the chart title
+   * @param subtitle the line under the title
+   */
   public static void title(String title, String subtitle) {
     Impl i = impl();
     if (i != null) call(i.titleSub, title, subtitle);
   }
 
-  /** {@code MemoryProfiler.heapDump(name)}; null when the profiler is absent or not running. */
+  /**
+   * {@code MemoryProfiler.heapDump(name)}: records a heap dump and marks it on the timeline.
+   *
+   * @param name a label for the dump (used in the file name)
+   * @return the dump's file path; null when the profiler is absent or not running
+   */
   public static String heapDump(String name) {
     Impl i = impl();
     Object r = i == null ? null : call(i.heapDump, name);

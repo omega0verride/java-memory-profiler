@@ -52,6 +52,9 @@ public class HeapSampler {
     thread.start();
   }
 
+  /** True between {@link #start()} and {@link #stop()}. */
+  boolean isRunning() { return running; }
+
   public synchronized void stop() {
     running = false;
     Thread t = thread;

@@ -45,6 +45,15 @@ tasks.withType<JavaCompile>().configureEach {
   options.encoding = "UTF-8"
 }
 
+// The agents' guide and the sources (their javadoc is the API reference the guide points to)
+// travel in the jar, so an agent with only the jar has both. Tests check the guide against them.
+tasks.processResources {
+  from("AGENTS.md")
+  into("META-INF/sources") {
+    from("src/main/java", "memprofiler-api/src/main/java")
+  }
+}
+
 tasks.jar {
   archiveBaseName.set("java-memory-profiler")
   manifest {

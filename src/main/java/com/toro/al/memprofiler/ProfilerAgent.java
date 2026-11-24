@@ -28,7 +28,10 @@ import java.lang.instrument.Instrumentation;
  *   <li>{@code heapDumpDir}  — directory for .hprof heap dumps (default java.io.tmpdir)</li>
  *   <li>{@code heapDumpOpener} — how to open dumps: system, visualvm, or intellij (default system)</li>
  *   <li>{@code heapDumpOpenerPath} — path to the opener binary (default auto-detect)</li>
- *   <li>{@code sourceRoots}  — source roots, separated by {@code ;} (Open in IDE, HTML snippets)</li>
+ *   <li>{@code sourceRoots}  — source roots, separated by {@code ;} (Open in IDE, View Source, HTML snippets)</li>
+ *   <li>{@code sourceOpener} — how "Open in IDE" opens a file at its line: auto, intellij, vscode, system,
+ *       or a command with {@code {file}} and {@code {line}} (default auto)</li>
+ *   <li>{@code sourceOpenerPath} — launcher binary for intellij / vscode (default auto-detect)</li>
  *   <li>{@code title}        — chart title for exports</li>
  *   <li>{@code subtitle}     — chart subtitle for exports</li>
  *   <li>{@code exportHtml}   — write an interactive HTML export here when the JVM exits</li>
@@ -87,6 +90,8 @@ public final class ProfilerAgent {
         else if ("heapDumpOpener".equals(k)) cfg.heapDumpOpener(v);
         else if ("heapDumpOpenerPath".equals(k)) cfg.heapDumpOpener(cfg.heapDumpOpener, v);
         else if ("sourceRoots".equals(k)) cfg.sourceRoots(v.split(";"));
+        else if ("sourceOpener".equals(k)) cfg.sourceOpener(v, cfg.sourceOpenerPath);
+        else if ("sourceOpenerPath".equals(k)) cfg.sourceOpener(cfg.sourceOpener, v);
         else if ("title".equals(k))      cfg.title(v);
         else if ("exportHtml".equals(k)) cfg.exportHtmlOnStop(v);
         else if ("exportPng".equals(k))  exportPng = v;

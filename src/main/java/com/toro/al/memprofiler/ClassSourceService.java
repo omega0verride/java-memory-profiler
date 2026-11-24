@@ -3,6 +3,7 @@ package com.toro.al.memprofiler;
 import org.benf.cfr.reader.api.CfrDriver;
 import org.benf.cfr.reader.api.ClassFileSource;
 import org.benf.cfr.reader.api.OutputSinkFactory;
+import org.benf.cfr.reader.api.SinkReturns;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -13,9 +14,13 @@ import java.util.*;
 /**
  * Provides Java source code for a given class name. Strategy:
  * <ol>
- *   <li>Try to find the .java source on the classpath (e.g. source jars)</li>
+ *   <li>The real {@code .java} file under the configured source roots</li>
+ *   <li>The {@code .java} source on the classpath (e.g. source jars)</li>
  *   <li>Otherwise, decompile the class bytecode using CFR</li>
  * </ol>
+ * A requested source line (the line of a mark) is translated to the line of
+ * the returned text: the same line for real source, and for decompiled code
+ * the first statement CFR emitted for that line's bytecode.
  */
 final class ClassSourceService {
 
@@ -25,48 +30,138 @@ final class ClassSourceService {
     final String source;
     final String origin; // "source" or "decompiled"
     final String className;
+    /** Source file the text came from (relative to its root), or null for decompiled code. */
+    final String file;
+    /** The requested line in the original source file, 0 = none requested. */
+    final int sourceLine;
+    /** The line of {@link #source} to highlight, 0 = none (or not found in decompiled code). */
+    final int line;
 
-    SourceResult(String source, String origin, String className) {
+    SourceResult(String source, String origin, String className, String file, int sourceLine, int line) {
       this.source = source;
       this.origin = origin;
       this.className = className;
+      this.file = file;
+      this.sourceLine = sourceLine;
+      this.line = line;
     }
 
     String toJson() {
-      StringBuilder sb = new StringBuilder(source.length() + 128);
+      StringBuilder sb = new StringBuilder(source.length() + 160);
       sb.append("{\"className\":\"").append(jsonEscape(className)).append('"')
-        .append(",\"origin\":\"").append(origin).append('"')
+        .append(",\"origin\":\"").append(origin).append('"');
+      if (file != null) sb.append(",\"file\":\"").append(jsonEscape(file)).append('"');
+      sb.append(",\"sourceLine\":").append(sourceLine)
+        .append(",\"line\":").append(line)
         .append(",\"source\":\"").append(jsonEscape(source)).append("\"}");
       return sb.toString();
     }
   }
 
-  /**
-   * Get source for the given fully-qualified class name.
-   */
+  /** Get source for the given fully-qualified class name, with no line to find. */
   static SourceResult getSource(String className) throws ClassNotFoundException {
-    // Try to find .java source on classpath
-    String sourcePath = className.replace('.', '/') + ".java";
-    InputStream srcIn = ClassSourceService.class.getClassLoader().getResourceAsStream(sourcePath);
-    if (srcIn != null) {
+    return getSource(className, null, 0, null);
+  }
+
+  /**
+   * Get source for {@code className}.
+   *
+   * @param className   fully-qualified class name; nested classes use {@code $}
+   * @param sourceFile  source path relative to a root (for example
+   *                    {@code com/acme/Foo.java}, as recorded for a mark), or null to
+   *                    derive it from the class name (nested classes live in the
+   *                    outer class's file)
+   * @param sourceLine  line in that file to highlight, 0 = none
+   * @param sourceRoots roots searched for {@code sourceFile} first (may be null)
+   */
+  static SourceResult getSource(String className, String sourceFile, int sourceLine, String[] sourceRoots)
+      throws ClassNotFoundException {
+    String rel = sourceFile != null && !sourceFile.trim().isEmpty()
+        ? sourceFile.trim().replace('\\', '/') : defaultSourcePath(className);
+    int line = Math.max(0, sourceLine);
+
+    // 1. the real file under the configured source roots: exact line numbers
+    java.io.File f = HtmlExporter.resolveSource(rel, sourceRoots);
+    if (f != null) {
       try {
-        String src = readStream(srcIn);
-        return new SourceResult(src, "source", className);
+        String src = readStream(new java.io.FileInputStream(f));
+        return new SourceResult(src, "source", className, rel, line, clampLine(src, line));
       } catch (IOException ignored) {}
     }
 
-    // Decompile using CFR
-    String decompiled = decompile(className);
-    return new SourceResult(decompiled, "decompiled", className);
+    // 2. .java source on the classpath (source jars)
+    if (!rel.contains("..")) {
+      InputStream srcIn = ClassSourceService.class.getClassLoader().getResourceAsStream(rel);
+      if (srcIn != null) {
+        try {
+          String src = readStream(srcIn);
+          return new SourceResult(src, "source", className, rel, line, clampLine(src, line));
+        } catch (IOException ignored) {}
+      }
+    }
+
+    // 3. decompile, and map the source line onto the decompiled text
+    Decompiled d = decompile(className);
+    return new SourceResult(d.text, "decompiled", className, null, line, line > 0 ? mapLine(d.mappings, line) : 0);
   }
 
-  private static String decompile(String className) throws ClassNotFoundException {
-    // Load the class bytecode
-    String resourcePath = className.replace('.', '/') + ".class";
-    ClassLoader cl = Thread.currentThread().getContextClassLoader();
-    if (cl == null) cl = ClassSourceService.class.getClassLoader();
+  /** {@code com.acme.Outer$Inner} is in {@code com/acme/Outer.java}. */
+  static String defaultSourcePath(String className) {
+    String outer = className;
+    int dollar = outer.indexOf('$');
+    if (dollar > 0) outer = outer.substring(0, dollar);
+    return outer.replace('.', '/') + ".java";
+  }
 
-    // Also try with Instrumentation to ensure the class is loaded
+  private static int clampLine(String src, int line) {
+    if (line <= 0) return 0;
+    int lines = 1;
+    for (int i = 0; i < src.length(); i++) if (src.charAt(i) == '\n') lines++;
+    return line <= lines ? line : 0;
+  }
+
+  /**
+   * The decompiled line for {@code sourceLine}: for every bytecode range the
+   * class file attributes to that line, the first statement CFR emitted inside
+   * it; the earliest such line wins. When no statement starts inside a range
+   * (the line's code was folded into a neighbour), the nearest statement before
+   * it is used. 0 when the line has no bytecode (comments, blank lines, or a
+   * class compiled without line numbers).
+   */
+  static int mapLine(List<SinkReturns.LineNumberMapping> mappings, int sourceLine) {
+    int best = Integer.MAX_VALUE;
+    for (SinkReturns.LineNumberMapping m : mappings) {
+      NavigableMap<Integer, Integer> classFile = m.getClassFileMappings();
+      NavigableMap<Integer, Integer> output = m.getMappings();
+      if (classFile == null || output == null || output.isEmpty()) continue;
+      for (Map.Entry<Integer, Integer> e : classFile.entrySet()) {
+        if (e.getValue() == null || e.getValue().intValue() != sourceLine) continue;
+        Integer next = classFile.higherKey(e.getKey());
+        SortedMap<Integer, Integer> inRange =
+            output.subMap(e.getKey(), true, next == null ? Integer.MAX_VALUE : next.intValue(), false);
+        if (!inRange.isEmpty()) {
+          for (Integer outLine : inRange.values()) best = Math.min(best, outLine.intValue());
+        } else {
+          Map.Entry<Integer, Integer> near = output.floorEntry(e.getKey());
+          if (near == null) near = output.ceilingEntry(e.getKey());
+          if (near != null) best = Math.min(best, near.getValue().intValue());
+        }
+      }
+    }
+    return best == Integer.MAX_VALUE ? 0 : best;
+  }
+
+  static final class Decompiled {
+    final String text;
+    final List<SinkReturns.LineNumberMapping> mappings;
+    Decompiled(String text, List<SinkReturns.LineNumberMapping> mappings) {
+      this.text = text;
+      this.mappings = mappings;
+    }
+  }
+
+  static Decompiled decompile(String className) throws ClassNotFoundException {
+    // Find the class (Instrumentation sees classes of every loader), else load it
     Instrumentation inst = ProfilerAgent.instrumentation();
     Class<?> targetClass = null;
     if (inst != null) {
@@ -83,22 +178,27 @@ final class ClassSourceService {
 
     final ClassLoader targetLoader = targetClass.getClassLoader();
 
-    // Use CFR with a custom class file source that reads from the classloader
+    // CFR reads the bytes from the class's own loader; the JAVA sink gets the
+    // text, the LINENUMBER sink the bytecode-offset maps used by mapLine
     final StringBuilder output = new StringBuilder();
+    final List<SinkReturns.LineNumberMapping> mappings = new ArrayList<SinkReturns.LineNumberMapping>();
 
     OutputSinkFactory sinkFactory = new OutputSinkFactory() {
       @Override
       public List<SinkClass> getSupportedSinks(SinkType sinkType, Collection<SinkClass> available) {
+        if (sinkType == SinkType.LINENUMBER) return Collections.singletonList(SinkClass.LINE_NUMBER_MAPPING);
         return Collections.singletonList(SinkClass.STRING);
       }
 
       @Override
-      public <T> Sink<T> getSink(SinkType sinkType, SinkClass sinkClass) {
+      public <T> Sink<T> getSink(final SinkType sinkType, SinkClass sinkClass) {
         return new Sink<T>() {
           @Override
           public void write(T t) {
             if (sinkType == SinkType.JAVA && t instanceof String) {
               output.append((String) t);
+            } else if (sinkType == SinkType.LINENUMBER && t instanceof SinkReturns.LineNumberMapping) {
+              mappings.add((SinkReturns.LineNumberMapping) t);
             }
           }
         };
@@ -109,6 +209,7 @@ final class ClassSourceService {
     options.put("showversion", "false");
     options.put("comments", "false");
     options.put("innerclasses", "false");
+    options.put("trackbytecodeloc", "true");
 
     CfrDriver driver = new CfrDriver.Builder()
       .withClassFileSource(new ClassLoaderClassFileSource(targetLoader))
@@ -122,7 +223,7 @@ final class ClassSourceService {
     if (result.isEmpty()) {
       throw new ClassNotFoundException("Could not decompile: " + className);
     }
-    return result;
+    return new Decompiled(result, mappings);
   }
 
   /**
