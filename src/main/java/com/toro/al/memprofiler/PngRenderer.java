@@ -703,9 +703,10 @@ public final class PngRenderer {
 
   private static void drawHeader(Graphics2D g, Model m, Palette pal) {
     double maxW = m.width - 2 * 24;
+    GithubLink.draw(g, m.width - 24, 34 - GithubLink.capHeight(F_TITLE) / 2, maxW, pal.mute);
     g.setColor(pal.text);
     g.setFont(F_TITLE);
-    g.drawString(fitText(F_TITLE, m.title, maxW), 24f, 34f);
+    g.drawString(fitText(F_TITLE, m.title, maxW - GithubLink.reserved(maxW)), 24f, 34f);
     g.setColor(pal.mute);
     g.setFont(F_SUB);
     g.drawString(fitText(F_SUB, m.subtitle, maxW), 24f, 54f);

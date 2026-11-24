@@ -234,9 +234,10 @@ final class ComparePngRenderer {
 
       // header and legend
       double maxW = m.width - 48;
+      GithubLink.draw(g, m.width - 24, 34 - GithubLink.capHeight(PngRenderer.F_TITLE) / 2, maxW, pal.mute);
       g.setColor(pal.text);
       g.setFont(PngRenderer.F_TITLE);
-      g.drawString(PngRenderer.fitText(PngRenderer.F_TITLE, m.title, maxW), 24f, 34f);
+      g.drawString(PngRenderer.fitText(PngRenderer.F_TITLE, m.title, maxW - GithubLink.reserved(maxW)), 24f, 34f);
       g.setColor(pal.mute);
       g.setFont(PngRenderer.F_SUB);
       g.drawString(PngRenderer.fitText(PngRenderer.F_SUB, m.subtitle, maxW), 24f, 54f);
