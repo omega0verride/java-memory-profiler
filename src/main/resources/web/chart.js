@@ -2,6 +2,7 @@ import { watchEffect } from 'vue';
 import { state, VIEW, getTimeRange, freezeView, ensureVisible, selectPoint, selectRangePoint } from './state.js';
 import { setAutoGc } from './api.js';
 import { fmtTs } from './util.js';
+import { SOLID, DASHED, BREAK, segmentStyle, isHeapReading } from './gaps.js';
 import {
   BADGE_H, BADGE_PAD_X, DOT_GAP, DOT_R, TITLE_ROW_H, TITLE_PAD_X,
   isAnnotated, buildRows, buildBands, layoutBadges, layoutBandTitles, badgeTextColor,
@@ -27,6 +28,7 @@ const CHART_VARS = {
   grid: ['--chart-grid', '#1c222d'],
   axis: ['--chart-axis', '#6a7384'],
   line: ['--chart-line', '#4ea1ff'],
+  area: ['--chart-area', 'rgba(78,161,255,0.14)'],
   time: ['--chart-time', '#8a93a3'],
   track: ['--chart-track', '#2a3242'],
   labelBg: ['--chart-label-bg', 'rgba(15,17,22,0.85)'],
@@ -166,24 +168,6 @@ function resize() {
   draw();
 }
 
-function computeGapBreakThreshold() {
-  // Estimate typical sampling interval from the most recent points and
-  // treat any larger gap as a pause (e.g. debugger breakpoint) so the
-  // line is broken instead of drawing a diagonal "bridge".
-  const pts = state.points;
-  if (pts.length < 3) return 2000;
-  const start = Math.max(1, pts.length - 100);
-  const gaps = [];
-  for (let i = start; i < pts.length; i++) {
-    const dt = pts[i].timestamp - pts[i - 1].timestamp;
-    if (dt > 0) gaps.push(dt);
-  }
-  if (!gaps.length) return 2000;
-  gaps.sort((a, b) => a - b);
-  const median = gaps[Math.floor(gaps.length / 2)];
-  return Math.max(3 * median, 1500);
-}
-
 function getYMax() {
   if (!state.yScaleAuto && state.yScaleMax != null) {
     return state.yScaleMax;
@@ -265,6 +249,7 @@ function draw() {
 
   const anno = state.annotations ? annotationModel() : null;
   if (anno) drawBands(anno.bands, xAt, padL, padT, plotW, plotH, tMin, tMax, C);
+  drawGcShading(xAt, padL, padT, plotW, plotH, tMin, tMax);
 
   ctx.strokeStyle = C.grid;
   ctx.fillStyle = C.axis;
@@ -299,29 +284,11 @@ function draw() {
   ctx.beginPath();
   ctx.rect(padL, padT, plotW, plotH);
   ctx.clip();
-  ctx.strokeStyle = C.line;
-  ctx.lineWidth = 1.3;
-  ctx.beginPath();
-  const gapBreakMs = computeGapBreakThreshold();
-  let started = false;
-  let prevTs = 0;
-  for (const p of state.points) {
-    if (p.timestamp < tMin - 1000 || p.timestamp > tMax + 1000) { started = false; continue; }
-    const x = xAt(p.timestamp);
-    const y = yAt(p.usedMB);
-    if (!started || (p.timestamp - prevTs) > gapBreakMs) {
-      ctx.moveTo(x, y);
-      started = true;
-    } else {
-      ctx.lineTo(x, y);
-    }
-    prevTs = p.timestamp;
-  }
-  ctx.stroke();
+  drawHeapLine(xAt, yAt, tMin, tMax, C);
   
   // Draw color-coded shapes for non-SAMPLE events on the line
   for (const p of state.points) {
-    if (p.kind === 'SAMPLE') continue;
+    if (p.kind === 'SAMPLE' || p.kind === 'REFERENCE') continue;
     if (anno && isAnnotated(p.kind)) continue; // drawn as dots with badges below
     if (p.timestamp < tMin - 1000 || p.timestamp > tMax + 1000) continue;
     const x = xAt(p.timestamp);
@@ -338,6 +305,7 @@ function draw() {
 
   let obstacles = [];
   if (anno) obstacles = drawReferences(yAt, yMax, padL, padT, plotW, plotH, C);
+  if (anno) obstacles = obstacles.concat(drawSegments(xAt, padL, padT, plotW, tMin, tMax, C));
   if (anno) drawBadges(anno.rows, xAt, yAt, { x: padL, y: padT, w: plotW, h: plotH }, tMin, tMax, obstacles, C);
   if (anno) drawBandTitles(anno.bands, xAt, padL, padT, plotW, tMin, tMax, C);
 
@@ -347,7 +315,7 @@ function draw() {
   ctx.beginPath(); ctx.moveTo(padL, trackY); ctx.lineTo(w - padR, trackY); ctx.stroke();
 
   for (const p of state.points) {
-    if (p.kind === 'SAMPLE') continue;
+    if (p.kind === 'SAMPLE' || p.kind === 'REFERENCE') continue;
     if (p.timestamp < tMin || p.timestamp > tMax) continue;
     const x = xAt(p.timestamp);
     const color = getPointColor(p);
@@ -437,6 +405,121 @@ function draw() {
   ctx.fillStyle = C.time;
   ctx.fillText(fmtTs(tMin), padL, h - 6);
   ctx.fillText(fmtTs(tMax), w - padR - 60, h - 6);
+}
+
+/** Time ranges where GC took at least the threshold share of wall time ("GC overhead 94%"). */
+function drawGcShading(xAt, padL, padT, plotW, plotH, tMin, tMax) {
+  const gp = state.gcPressure;
+  if (!gp || !gp.regions || !gp.regions.length) return;
+  const light = document.documentElement.getAttribute('data-theme') === 'light';
+  ctx.save();
+  ctx.font = TITLE_FONT;
+  ctx.textBaseline = 'bottom';
+  for (const [from, to, pct] of gp.regions) {
+    if (to < tMin || from > tMax) continue;
+    const x1 = Math.max(padL, xAt(from)), x2 = Math.min(padL + plotW, xAt(to));
+    if (x2 - x1 < 1) continue;
+    ctx.fillStyle = light ? 'rgba(214,69,69,0.07)' : 'rgba(255,110,110,0.10)';
+    ctx.fillRect(x1, padT, x2 - x1, plotH);
+    const label = 'GC overhead ' + pct + '%';
+    ctx.fillStyle = light ? '#b42318' : '#ff9a9a';
+    if (ctx.measureText(label).width + 8 <= x2 - x1) ctx.fillText(label, x1 + 4, padT + plotH - 4);
+  }
+  ctx.restore();
+}
+
+/** Segment brackets at the top of the plot (Segments.java); returns their rectangles as badge obstacles. */
+function drawSegments(xAt, padL, padT, plotW, tMin, tMax, C) {
+  const segs = (state.segments || []).filter(s => !(s.toTs < tMin || s.fromTs > tMax));
+  if (!segs.length) return [];
+  const light = document.documentElement.getAttribute('data-theme') === 'light';
+  const up = light ? '#d64545' : '#ff6e6e', down = light ? '#16a34a' : '#37c26a';
+  ctx.save();
+  ctx.font = TITLE_FONT;
+  ctx.textBaseline = 'middle';
+  const rowsRight = [], rects = [];
+  for (const s of segs) {
+    const x1 = Math.max(padL, xAt(s.fromTs)), x2 = Math.min(padL + plotW, xAt(s.toTs));
+    const lw = ctx.measureText(s.label).width + 10;
+    const lx = Math.min(Math.max((x1 + x2) / 2 - lw / 2, padL), padL + plotW - lw);
+    const left = Math.min(x1, lx), right = Math.max(x2, lx + lw);
+    let row = 0;
+    while (row < rowsRight.length && rowsRight[row] + 6 > left) row++;
+    rowsRight[row] = right;
+    const y = padT + 4 + row * 21, ly = y + 14;
+    const col = s.kind === 'largest increase' ? up : s.kind === 'largest release' ? down : C.crosshairText;
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(x1, ly); ctx.lineTo(x2, ly);
+    ctx.moveTo(x1, ly - 3); ctx.lineTo(x1, ly + 3);
+    ctx.moveTo(x2, ly - 3); ctx.lineTo(x2, ly + 3);
+    ctx.stroke();
+    ctx.fillStyle = C.labelBg;
+    ctx.fillRect(lx, y, lw, 13);
+    ctx.fillStyle = col;
+    ctx.fillText(s.label, lx + 5, y + 7);
+    rects.push({ x: left, y, w: right - left, h: 18 });
+  }
+  ctx.restore();
+  return rects;
+}
+
+/**
+ * The heap line: every heap reading (REFERENCE excluded) in order, solid where
+ * the sampler kept up, dashed across GC stalls and broken across real gaps in
+ * observation (GapRule.java via state.gaps). The area fill stays continuous
+ * under dashed segments and ends at breaks.
+ */
+function drawHeapLine(xAt, yAt, tMin, tMax, C) {
+  const yBase = yAt(0);
+  const solid = new Path2D(), dashed = new Path2D(), area = new Path2D();
+  const dots = [];
+  let section = [];
+  const closeSection = () => {
+    if (section.length === 1) dots.push(section[0]);
+    else if (section.length > 1) {
+      area.moveTo(section[0][0], yBase);
+      for (const [x, y] of section) area.lineTo(x, y);
+      area.lineTo(section[section.length - 1][0], yBase);
+      area.closePath();
+    }
+    section = [];
+  };
+  let prev = null;
+  for (const p of state.points) {
+    if (!isHeapReading(p)) continue;
+    // one point beyond each edge keeps the line running to the plot border
+    if (p.timestamp < tMin) { prev = p; continue; }
+    const x = xAt(p.timestamp), y = yAt(p.usedMB);
+    if (prev) {
+      const style = p.timestamp >= prev.timestamp ? segmentStyle(state.gaps, prev.timestamp, p.timestamp) : SOLID;
+      const px = xAt(prev.timestamp), py = yAt(prev.usedMB);
+      if (!section.length) section.push([px, py]);
+      if (style === BREAK) {
+        closeSection();
+      } else {
+        const path = style === DASHED ? dashed : solid;
+        path.moveTo(px, py);
+        path.lineTo(x, y);
+      }
+    }
+    section.push([x, y]);
+    prev = p;
+    if (p.timestamp > tMax) break;
+  }
+  closeSection();
+  ctx.fillStyle = C.area;
+  ctx.fill(area);
+  ctx.strokeStyle = C.line;
+  ctx.lineWidth = 1.3;
+  ctx.lineJoin = 'round';
+  ctx.stroke(solid);
+  ctx.setLineDash([5, 4]);
+  ctx.stroke(dashed);
+  ctx.setLineDash([]);
+  ctx.fillStyle = C.line;
+  for (const [x, y] of dots) { ctx.beginPath(); ctx.arc(x, y, 1.8, 0, Math.PI * 2); ctx.fill(); }
 }
 
 // ---- annotation layers ----
@@ -647,6 +730,7 @@ function pointAt(clientX, clientY) {
   }
   let best = null, bestDist = Infinity;
   for (const p of state.points) {
+    if (!isHeapReading(p)) continue;
     const d = Math.abs(p.timestamp - ts);
     if (d < bestDist) { bestDist = d; best = p; }
   }

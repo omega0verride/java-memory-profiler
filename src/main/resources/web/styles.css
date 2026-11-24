@@ -39,6 +39,7 @@
   --chart-grid: #1c222d;
   --chart-axis: #6a7384;
   --chart-line: #4ea1ff;
+  --chart-area: rgba(78, 161, 255, 0.14);
   --chart-time: #8a93a3;
   --chart-track: #2a3242;
   --chart-label-bg: rgba(15, 17, 22, 0.85);
@@ -1598,6 +1599,7 @@ aside {
   --chart-grid: #e6e9ef;
   --chart-axis: #5b6578;
   --chart-line: #1f6fd1;
+  --chart-area: rgba(31, 111, 209, 0.12);
   --chart-time: #5b6578;
   --chart-track: #d3d9e2;
   --chart-label-bg: rgba(255, 255, 255, 0.9);
@@ -1614,7 +1616,7 @@ aside {
   --band-fill: rgba(15, 23, 42, 0.045);
   --band-edge: rgba(15, 23, 42, 0.14);
   --band-text: #5b6578;
-  --ref-line: #d64545;
+  --ref-line: #c43c3c; /* 5.2:1 on white (label text) */
   --ref-max: #6b7280;
   color-scheme: light;
 }
@@ -1893,3 +1895,34 @@ header .status.snapshot::before {
 
 /* Firefox scrollbars for the new scroll areas (WebKit uses ::-webkit-scrollbar) */
 .marks-table-wrap, .is-snapshot .events-list, .code-snippet { scrollbar-color: var(--grid-2) transparent; scrollbar-width: thin; }
+
+/* ---- chart key (line, dashed GC stalls, breaks) ---- */
+.chart-key {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  padding: 4px 10px 2px 50px;
+  font-size: 11.5px;
+  color: var(--mute, #8791a5);
+}
+.chart-key .ck-item { display: inline-flex; align-items: center; gap: 6px; }
+.chart-key .ck-swatch { display: inline-block; width: 18px; height: 0; border-top: 2px solid var(--chart-line); }
+.chart-key .ck-swatch.dashed { border-top-style: dashed; }
+.chart-key .ck-swatch.gap { border-top: 2px dotted transparent; width: 10px; position: relative; }
+.chart-key .ck-swatch.gap::before, .chart-key .ck-swatch.gap::after {
+  content: ''; position: absolute; top: -2px; width: 5px; border-top: 2px solid var(--chart-line);
+}
+.chart-key .ck-swatch.gap::before { left: -6px; }
+.chart-key .ck-swatch.gap::after { right: -6px; }
+.chart-key .ck-swatch.gcband { width: 14px; height: 10px; border: 0; background: var(--gc-band, rgba(255, 110, 110, 0.16)); }
+
+/* ---- marks table tools ---- */
+.marks-opt { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--mute); cursor: pointer; margin-left: auto; }
+.marks-copy { font: inherit; font-size: 11.5px; color: var(--fg); background: var(--bg-2); border: 1px solid var(--grid-2);
+  border-radius: 5px; padding: 1px 8px; cursor: pointer; margin-left: 8px; }
+.marks-copy:hover { background: var(--hover-bg); }
+.marks-table td.muted { color: var(--mute); }
+
+.range-export { display: flex; gap: 6px; margin-top: 10px; }
+.range-export .tool-btn { flex: 1; justify-content: center; }

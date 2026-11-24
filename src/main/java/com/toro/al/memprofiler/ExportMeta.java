@@ -18,8 +18,12 @@ public final class ExportMeta {
   public long pid = -1;
   /** Where the data came from, e.g. "live" or "run.jsonl (run 2 of 3)". */
   public String source = "live";
-  /** Configured sampling interval, 0 when unknown (estimated from the data instead). */
+  /** Configured sampling interval (live config or the JSONL META line), 0 when unknown. */
   public long intervalMs;
+  /** The run id from the JSONL META line, if any. */
+  public String runId;
+  /** Profiler version that recorded the data (JSONL META), if known. */
+  public String recordedVersion;
   public String profilerVersion = MemoryProfiler.version();
   /** Export time (epoch ms). The only field that changes between two exports of the same data. */
   public long exportedAt;
@@ -29,6 +33,14 @@ public final class ExportMeta {
   public long endTime;
   public long jvmMaxHeapMB = -1;
   public long peakMB;
+  /** Highest reading among marks and scope ends (-1 if none). */
+  public long peakRetainedMB = -1;
+  /** Median gap between samples: the effective sampling interval. */
+  public long medianSampleGapMs;
+  public long gcTotalMs;
+  public long longestGcMs;
+  /** Viewer option: thousands separators for numbers inside mark labels. */
+  public boolean formatLabelNumbers;
   public long pointCount;
   public long sampleCount;
   public long exportedSampleCount;
@@ -41,6 +53,13 @@ public final class ExportMeta {
     m.pid = pid;
     m.source = source;
     m.intervalMs = intervalMs;
+    m.runId = runId;
+    m.recordedVersion = recordedVersion;
+    m.peakRetainedMB = peakRetainedMB;
+    m.medianSampleGapMs = medianSampleGapMs;
+    m.gcTotalMs = gcTotalMs;
+    m.longestGcMs = longestGcMs;
+    m.formatLabelNumbers = formatLabelNumbers;
     m.profilerVersion = profilerVersion;
     m.exportedAt = exportedAt;
     m.startTime = startTime;
@@ -80,6 +99,26 @@ public final class ExportMeta {
     return sb.toString();
   }
 
+  /**
+   * How the line was sampled, for the PNG and HTML keys: the configured interval,
+   * plus the effective median when the two differ a lot (a GC-bound run), or the
+   * median when the configured interval is not recorded (files from 1.0.4).
+   */
+  public String samplingText() {
+    long med = medianSampleGapMs;
+    if (intervalMs > 0) {
+      StringBuilder sb = new StringBuilder("heap sampled every ").append(intervalMs).append(" ms");
+      if (med > 0 && (med * 2 > intervalMs * 3 || med * 3 < intervalMs * 2)) {
+        sb.append(" (effective median ").append(med).append(" ms");
+        if (med > intervalMs) sb.append(", sampler delayed by GC");
+        sb.append(')');
+      }
+      return sb.toString();
+    }
+    if (med > 0) return "heap sampled about every " + med + " ms (median; interval not recorded)";
+    return "sampled heap";
+  }
+
   String toJson() {
     StringBuilder sb = new StringBuilder(512);
     sb.append('{');
@@ -90,12 +129,20 @@ public final class ExportMeta {
     sb.append(",\"pid\":").append(pid);
     sb.append(",\"source\":"); MiniJson.quote(sb, source);
     sb.append(",\"intervalMs\":").append(intervalMs);
+    sb.append(",\"medianSampleGapMs\":").append(medianSampleGapMs);
+    sb.append(",\"samplingText\":"); MiniJson.quote(sb, samplingText());
+    sb.append(",\"runId\":"); MiniJson.quote(sb, runId);
     sb.append(",\"profilerVersion\":"); MiniJson.quote(sb, profilerVersion);
+    sb.append(",\"recordedVersion\":"); MiniJson.quote(sb, recordedVersion);
     sb.append(",\"startTime\":").append(startTime);
     sb.append(",\"endTime\":").append(endTime);
     sb.append(",\"durationMs\":").append(Math.max(0, endTime - startTime));
     sb.append(",\"jvmMaxHeapMB\":").append(jvmMaxHeapMB);
     sb.append(",\"peakMB\":").append(peakMB);
+    sb.append(",\"peakRetainedMB\":").append(peakRetainedMB);
+    sb.append(",\"gcTotalMs\":").append(gcTotalMs);
+    sb.append(",\"longestGcMs\":").append(longestGcMs);
+    sb.append(",\"formatLabelNumbers\":").append(formatLabelNumbers);
     sb.append(",\"pointCount\":").append(pointCount);
     sb.append(",\"sampleCount\":").append(sampleCount);
     sb.append(",\"exportedSampleCount\":").append(exportedSampleCount);

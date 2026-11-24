@@ -5,6 +5,8 @@
 // window.__PROFILE__ = { meta, points, references, sources }. Nothing is
 // fetched and nothing polls.
 
+import { splitReferences } from './gaps.js';
+
 const embedded = (typeof window !== 'undefined' && window.__PROFILE__) || null;
 
 /** True when running inside an exported HTML snapshot. */
@@ -25,7 +27,9 @@ function liveSource() {
 }
 
 function snapshotSource(profile) {
-  const points = Array.isArray(profile.points) ? profile.points : [];
+  // REFERENCE points never belong to the points (their usedMB is a line value)
+  const split = splitReferences(Array.isArray(profile.points) ? profile.points : []);
+  const points = split.points;
   const meta = profile.meta || {};
   let peak = 0;
   for (const p of points) if (p.usedMB > peak) peak = p.usedMB;
@@ -34,10 +38,14 @@ function snapshotSource(profile) {
     async load() {
       return {
         points,
-        references: Array.isArray(profile.references) ? profile.references : [],
+        references: (Array.isArray(profile.references) ? profile.references : []).concat(split.references),
+        gaps: profile.gaps || null,
+        gcPressure: profile.gcPressure || null,
+        segments: profile.segments || [],
+        samplingText: meta.samplingText || '',
         sources: profile.sources || {},
         meta,
-        maxObservedMB: Math.max(peak, meta.peakMB || 0),
+        maxObservedMB: peak || meta.peakMB || 0,
         jsonlPath: null,
         pid: typeof meta.pid === 'number' ? meta.pid : null,
         processName: meta.processName || null,

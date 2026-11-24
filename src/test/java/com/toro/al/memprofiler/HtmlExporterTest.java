@@ -84,7 +84,12 @@ class HtmlExporterTest {
 
     List<Object> refs = (List<Object>) data.get("references");
     assertEquals(1, refs.size());
-    assertPoint(expectedRefs.get(0), (Map<String, Object>) refs.get(0));
+    // references travel in the JSONL META line: value, caption, time and location survive
+    Map<String, Object> ref = (Map<String, Object>) refs.get(0);
+    assertEquals(Long.valueOf(expectedRefs.get(0).usedMB), ref.get("usedMB"));
+    assertEquals(expectedRefs.get(0).label, ref.get("label"));
+    assertEquals(Long.valueOf(expectedRefs.get(0).timestamp), ref.get("timestamp"));
+    assertEquals("REFERENCE", ref.get("kind"));
 
     Map<String, Object> meta = (Map<String, Object>) data.get("meta");
     assertEquals("Cache </title><script>x()</script> loader", meta.get("title"));
@@ -152,7 +157,8 @@ class HtmlExporterTest {
     File web = new File("src/main/resources/web");
     List<String> expected = new ArrayList<String>();
     for (File f : web.listFiles()) {
-      if (f.getName().endsWith(".js") && !f.getName().equals("layout-app.js") && !f.getName().equals("source-app.js")) {
+      if (f.getName().endsWith(".js") && !f.getName().equals("layout-app.js") && !f.getName().equals("source-app.js")
+          && !f.getName().equals("compare-app.js")) { // compare-app.js: the comparison page's own entry
         expected.add("web/" + f.getName());
       }
     }

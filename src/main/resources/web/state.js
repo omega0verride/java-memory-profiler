@@ -35,6 +35,11 @@ export const state = reactive({
   references: [],       // REFERENCE points: user-defined horizontal lines
   sources: {},          // sourceFile -> { file, line, start, lines[] } (snapshot only)
   intervalMs: 0,
+  gaps: null,           // heap line continuity from GapRule.java (see gaps.js)
+  samplingText: '',     // "heap sampled every 250 ms (...)" for the chart key
+  gcPressure: null,     // { totalMs, longestMs, sharePct, thresholdPct, regions: [[from, to, pct]], perMinute }
+  segments: [],         // brackets: user segments + largest increase / release (Segments.java)
+  hideRepeatedMarks: false,
   version: null,
   annotations: false,   // mark badges, scope bands, reference lines and the marks table
   marksCollapsed: false,

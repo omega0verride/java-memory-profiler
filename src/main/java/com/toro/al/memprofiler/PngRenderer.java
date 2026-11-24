@@ -56,18 +56,18 @@ public final class PngRenderer {
   static final double TABLE_ROW_H = 22;
   static final int TABLE_MAX_ROWS = 300;
 
-  private static final FontRenderContext FRC = new FontRenderContext(null, true, true);
-  private static final Font F_TITLE = new Font(Font.SANS_SERIF, Font.BOLD, 20);
-  private static final Font F_SUB = new Font(Font.SANS_SERIF, Font.PLAIN, 12).deriveFont(12.5f);
-  private static final Font F_AXIS = new Font(Font.SANS_SERIF, Font.PLAIN, 11);
-  private static final Font F_BADGE = new Font(Font.SANS_SERIF, Font.BOLD, 11);
-  private static final Font F_BAND = new Font(Font.SANS_SERIF, Font.PLAIN, 11);
-  private static final Font F_REF = new Font(Font.SANS_SERIF, Font.PLAIN, 11);
-  private static final Font F_KEY = new Font(Font.SANS_SERIF, Font.PLAIN, 11).deriveFont(11.5f);
-  private static final Font F_TABLE = new Font(Font.SANS_SERIF, Font.PLAIN, 11).deriveFont(11.5f);
-  private static final Font F_TABLE_HEAD = new Font(Font.SANS_SERIF, Font.BOLD, 11);
-  private static final Font F_TABLE_TITLE = new Font(Font.SANS_SERIF, Font.BOLD, 13);
-  private static final Font F_MONO = new Font(Font.MONOSPACED, Font.PLAIN, 11);
+  static final FontRenderContext FRC = new FontRenderContext(null, true, true);
+  static final Font F_TITLE = new Font(Font.SANS_SERIF, Font.BOLD, 20);
+  static final Font F_SUB = new Font(Font.SANS_SERIF, Font.PLAIN, 12).deriveFont(12.5f);
+  static final Font F_AXIS = new Font(Font.SANS_SERIF, Font.PLAIN, 11);
+  static final Font F_BADGE = new Font(Font.SANS_SERIF, Font.BOLD, 11);
+  static final Font F_BAND = new Font(Font.SANS_SERIF, Font.PLAIN, 11);
+  static final Font F_REF = new Font(Font.SANS_SERIF, Font.PLAIN, 11);
+  static final Font F_KEY = new Font(Font.SANS_SERIF, Font.PLAIN, 11).deriveFont(11.5f);
+  static final Font F_TABLE = new Font(Font.SANS_SERIF, Font.PLAIN, 11).deriveFont(11.5f);
+  static final Font F_TABLE_HEAD = new Font(Font.SANS_SERIF, Font.BOLD, 11);
+  static final Font F_TABLE_TITLE = new Font(Font.SANS_SERIF, Font.BOLD, 13);
+  static final Font F_MONO = new Font(Font.MONOSPACED, Font.PLAIN, 11);
 
   // ---- palette (mirrors the CSS variables of the viewer, light and dark) ----
 
@@ -104,7 +104,7 @@ public final class PngRenderer {
       p.bg = rgb(0xffffff); p.text = rgb(0x1b2230); p.mute = rgb(0x5b6578); p.faint = rgb(0x8a93a3);
       p.grid = rgb(0xe6e9ef); p.axis = rgb(0xc9ced8); p.line = rgb(0x1f6fd1); p.area = rgba(0x1f6fd1, 0.12);
       p.committed = rgb(0x8a93a3); p.bandFill = rgba(0x0f172a, 0.045); p.bandEdge = rgba(0x0f172a, 0.14);
-      p.ref = rgb(0xd64545); p.refMax = rgb(0x6b7280);
+      p.ref = rgb(0xc43c3c); p.refMax = rgb(0x6b7280); // ref: 5.2:1 on white (dark #ff6e6e: 7.0:1 on #0d1017)
       p.tableHead = rgb(0xf3f5f8); p.zebra = rgb(0xf9fafb); p.border = rgb(0xe6e9ef);
       p.up = rgb(0xd64545); p.down = rgb(0x16a34a);
       p.mark = rgb(0xf59e0b); p.start = rgb(0x16a34a); p.end = rgb(0xe5484d);
@@ -113,9 +113,9 @@ public final class PngRenderer {
     return p;
   }
 
-  private static Color rgb(int v) { return new Color(v); }
+  static Color rgb(int v) { return new Color(v); }
 
-  private static Color rgba(int v, double a) {
+  static Color rgba(int v, double a) {
     return new Color((v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF, (int) Math.round(a * 255));
   }
 
@@ -152,7 +152,16 @@ public final class PngRenderer {
     long[] committedTs = new long[0];
     long[] committedMB = new long[0];
     int seriesLen, committedLen;
-    long gapBreakMs;
+    /** The gap rule for the whole run (see {@link GapRule}). */
+    GapRule.Result gaps;
+    ProfileStats stats;
+    GcPressure gc;
+    /** User segments and automatic callouts in range, with their bracket rectangles. */
+    List<Segments.Segment> segments = new ArrayList<Segments.Segment>();
+    List<Annotations.Rect> bracketRects = new ArrayList<Annotations.Rect>();
+    boolean marksOnly;
+    String key2;
+    List<TableCol> columns = new ArrayList<TableCol>();
     List<DataPoint> events = new ArrayList<DataPoint>();
     int hiddenBadges;
     boolean table;
@@ -201,14 +210,25 @@ public final class PngRenderer {
   static Model model(PointSource src, PngOptions o) throws IOException {
     ProfileStats stats = ProfileStats.scan(src);
     Model m = new Model();
+    m.stats = stats;
     m.meta = src.meta().copy();
     stats.applyTo(m.meta);
+    m.gaps = stats.gaps(m.meta.intervalMs);
     m.title = o.title != null && !o.title.trim().isEmpty() ? o.title : m.meta.effectiveTitle();
     m.runStart = stats.firstTs;
     m.runEnd = stats.lastTs;
 
     List<Annotations.Row> allRows = Annotations.rows(stats.annotated, stats.firstTs);
+    if (o.formatLabelNumbers) for (Annotations.Row r : allRows) r.text = Annotations.formatNumbers(r.text);
     resolveRange(m, o, allRows);
+    m.marksOnly = o.marksOnlyTable;
+    GapRule.GcTime gcTime = stats.gapInput.gcTime();
+    List<Segments.Segment> segs = new ArrayList<Segments.Segment>(Segments.parse(o.segments, allRows, gcTime));
+    if (o.callouts) segs.addAll(Segments.callouts(allRows, gcTime));
+    for (Segments.Segment sg : segs) {
+      if (sg.to.point.timestamp >= m.tMin && sg.from.point.timestamp <= m.tMax) m.segments.add(sg);
+    }
+    m.gc = GcPressure.of(stats, m.gaps, o.gcOverheadPct);
     for (Annotations.Row r : allRows) {
       if (r.point.timestamp >= m.rowMin && r.point.timestamp <= m.rowMax) m.rows.add(r);
     }
@@ -238,6 +258,8 @@ public final class PngRenderer {
     }
     List<Annotations.Rect> obstacles = new ArrayList<Annotations.Rect>();
     for (RefLine r : m.refs) if (r.labelRect != null) obstacles.add(r.labelRect);
+    layoutBrackets(m);
+    obstacles.addAll(m.bracketRects);
     if (m.offScaleRect != null) obstacles.add(m.offScaleRect);
     m.badges = Annotations.layoutBadges(ins, m.plot, obstacles);
     for (Annotations.BadgePlacement b : m.badges) if (b.hidden) m.hiddenBadges++;
@@ -251,9 +273,13 @@ public final class PngRenderer {
     m.subtitle = subtitle(m, o);
     m.key = key(m, o);
 
+    m.key2 = key2(m);
+    m.columns = columns(o, m.rows);
+
     // table and total height
-    double y = m.plot.bottom() + 62;
-    m.table = o.includeTable;
+    double y = m.plot.bottom() + (m.key2.isEmpty() ? 62 : 78);
+    if (m.marksOnly) y = TITLE_BLOCK - 6;
+    m.table = o.includeTable || m.marksOnly;
     if (m.table) {
       m.tableTop = y + 6;
       m.tableRows = Math.min(m.rows.size(), TABLE_MAX_ROWS);
@@ -333,32 +359,39 @@ public final class PngRenderer {
     final long[] fT = new long[cols], fV = new long[cols], lT = new long[cols], lV = new long[cols];
     final long[] nT = new long[cols], nV = new long[cols], xT = new long[cols], xV = new long[cols];
     final boolean[] has = new boolean[cols];
+    final boolean[] hasC = new boolean[cols];
     final long[] cMin = o.committed ? new long[cols] : null, cMax = o.committed ? new long[cols] : null;
     final long[] cMinT = o.committed ? new long[cols] : null, cMaxT = o.committed ? new long[cols] : null;
     final DataPoint[] edge = new DataPoint[2]; // last sample before tMin, first after tMax
     src.forEach(new PointSource.Visitor() {
       public void visit(DataPoint p) {
         if (p.index > stats.lastIndex) return;
-        if (p.kind != DataPoint.Kind.SAMPLE) {
-          if (p.timestamp >= tMin && p.timestamp <= tMax && !Annotations.isAnnotated(p.kind)) m.events.add(p);
-          return;
+        if (p.kind == DataPoint.Kind.REFERENCE) return; // a line value, not a heap reading
+        if (p.kind != DataPoint.Kind.SAMPLE && p.timestamp >= tMin && p.timestamp <= tMax
+            && !Annotations.isAnnotated(p.kind)) {
+          m.events.add(p);
         }
+        // the heap line goes through every heap reading (samples, GC, marks, ...), like the browser chart
         long ts = p.timestamp;
-        if (ts < tMin) { edge[0] = p; return; }
-        if (ts > tMax) { if (edge[1] == null) edge[1] = p; return; }
+        if (ts < tMin) { if (edge[0] == null || ts >= edge[0].timestamp) edge[0] = p; return; }
+        if (ts > tMax) { if (edge[1] == null || ts < edge[1].timestamp) edge[1] = p; return; }
         int c = (int) Math.min(cols - 1, (ts - tMin) * cols / span);
         long v = p.usedMB;
+        boolean sample = p.kind == DataPoint.Kind.SAMPLE;
         if (!has[c]) {
           has[c] = true;
           fT[c] = lT[c] = nT[c] = xT[c] = ts;
           fV[c] = lV[c] = nV[c] = xV[c] = v;
-          if (cMin != null) { cMin[c] = cMax[c] = p.committedMB; cMinT[c] = cMaxT[c] = ts; }
+          if (cMin != null && sample) { cMin[c] = cMax[c] = p.committedMB; cMinT[c] = cMaxT[c] = ts; hasC[c] = true; }
           return;
         }
-        lT[c] = ts; lV[c] = v;
+        if (ts < fT[c]) { fT[c] = ts; fV[c] = v; }
+        if (ts >= lT[c]) { lT[c] = ts; lV[c] = v; }
         if (v < nV[c]) { nV[c] = v; nT[c] = ts; }
         if (v > xV[c]) { xV[c] = v; xT[c] = ts; }
-        if (cMin != null) {
+        if (cMin != null && sample && !hasC[c]) {
+          cMin[c] = cMax[c] = p.committedMB; cMinT[c] = cMaxT[c] = ts; hasC[c] = true;
+        } else if (cMin != null && sample) {
           if (p.committedMB < cMin[c]) { cMin[c] = p.committedMB; cMinT[c] = ts; }
           if (p.committedMB > cMax[c]) { cMax[c] = p.committedMB; cMaxT[c] = ts; }
         }
@@ -389,7 +422,7 @@ public final class PngRenderer {
       long[] cT = new long[cols * 2], cV = new long[cols * 2];
       int k = 0;
       for (int c = 0; c < cols; c++) {
-        if (!has[c]) continue;
+        if (!hasC[c]) continue;
         boolean minFirst = cMinT[c] <= cMaxT[c];
         cT[k] = minFirst ? cMinT[c] : cMaxT[c]; cV[k++] = minFirst ? cMin[c] : cMax[c];
         if (cMin[c] != cMax[c]) { cT[k] = minFirst ? cMaxT[c] : cMinT[c]; cV[k++] = minFirst ? cMax[c] : cMin[c]; }
@@ -398,8 +431,6 @@ public final class PngRenderer {
       m.committedMB = cV;
       m.committedLen = k;
     }
-    long interval = stats.medianSampleGapMs > 0 ? stats.medianSampleGapMs : 500;
-    m.gapBreakMs = Math.max(3 * interval, 1500);
   }
 
   private static void sort4(long[] t, long[] v) {
@@ -494,6 +525,7 @@ public final class PngRenderer {
     }
     if (sb.length() > 0) sb.append(" · ");
     sb.append("duration ").append(formatElapsed(m.runEnd - m.runStart, 1000));
+    if (m.meta.peakMB > 0) sb.append(" · peak ").append(formatMB(m.meta.peakMB, true));
     if (m.tMin > m.runStart || m.tMax < m.runEnd) {
       sb.append(" · showing ").append(formatElapsed(Math.max(0, m.tMin - m.runStart), 1000))
           .append('–').append(formatElapsed(m.tMax - m.runStart, 1000));
@@ -501,12 +533,124 @@ public final class PngRenderer {
     return sb.toString();
   }
 
-  private static String key(Model m, PngOptions o) {
-    long interval = m.meta.intervalMs;
+  static final double BRACKET_ROW_H = 21;
+
+  /** Segment brackets at the top of the plot: greedy rows, label above a line with end ticks. */
+  private static void layoutBrackets(Model m) {
+    List<double[]> rowsRight = new ArrayList<double[]>();
+    for (Segments.Segment sg : m.segments) {
+      double x1 = Math.max(m.plot.x, m.xAt(sg.from.point.timestamp));
+      double x2 = Math.min(m.plot.right(), m.xAt(sg.to.point.timestamp));
+      String label = Segments.USER.equals(sg.kind) ? sg.label() : sg.callout();
+      double lw = width(F_REF, label) + 10;
+      double cx = (x1 + x2) / 2;
+      double lx = Annotations.clamp(cx - lw / 2, m.plot.x, m.plot.right() - lw);
+      double left = Math.min(x1, lx), right = Math.max(x2, lx + lw);
+      int row = 0;
+      while (row < rowsRight.size() && rowsRight.get(row)[0] + 6 > left) row++;
+      if (row == rowsRight.size()) rowsRight.add(new double[] {Double.NEGATIVE_INFINITY});
+      rowsRight.get(row)[0] = right;
+      double y = m.plot.y + 4 + row * BRACKET_ROW_H;
+      m.bracketRects.add(new Annotations.Rect(left, y, right - left, BRACKET_ROW_H - 3));
+    }
+  }
+
+  private static String key2(Model m) {
     StringBuilder sb = new StringBuilder();
-    sb.append(interval > 0 ? "Line: heap sampled every " + interval + " ms (includes garbage)."
-        : "Line: sampled heap (includes garbage).");
+    if (m.gc != null && m.gc.totalMs > 0) {
+      sb.append(m.gc.summary()).append('.');
+      if (!m.gc.regions.isEmpty()) sb.append(" Shaded: GC took at least ").append(m.gc.thresholdPct).append("% of wall time.");
+    }
+    for (Segments.Segment sg : m.segments) {
+      if (Segments.USER.equals(sg.kind)) continue;
+      if (sb.length() > 0) sb.append(' ');
+      sb.append(Character.toUpperCase(sg.kind.charAt(0))).append(sg.kind.substring(1)).append(": marks ")
+          .append(sg.name()).append(' ').append(Segments.signedMB(sg.deltaMB)).append(" in ")
+          .append(formatDurationShort(sg.durationMs)).append('.');
+    }
+    return sb.toString();
+  }
+
+  /** One column of the marks table. */
+  static final class TableCol {
+    final String id, head;
+    double w;
+    final boolean right;
+
+    TableCol(String id, String head, double w, boolean right) {
+      this.id = id;
+      this.head = head;
+      this.w = w;
+      this.right = right;
+    }
+  }
+
+  static final String[] ALL_COLUMNS = {"badge", "mark", "retained", "delta", "first", "elapsed", "gc", "location", "thread"};
+
+  static List<TableCol> columns(PngOptions o, List<Annotations.Row> rows) {
+    List<String> ids = new ArrayList<String>();
+    if (o.tableColumns != null) {
+      for (String c : o.tableColumns.split(",")) {
+        String id = c.trim().toLowerCase(Locale.ROOT);
+        if (id.isEmpty()) continue;
+        boolean known = false;
+        for (String a : ALL_COLUMNS) if (a.equals(id)) known = true;
+        if (!known) throw new IllegalArgumentException("unknown table column " + c.trim() + "; use " + String.join(",", ALL_COLUMNS));
+        ids.add(id);
+      }
+    } else {
+      boolean anyGc = false;
+      for (Annotations.Row r : rows) if (r.point.gcMs != null) anyGc = true;
+      for (String a : ALL_COLUMNS) if (!"gc".equals(a) || anyGc) ids.add(a);
+    }
+    List<TableCol> cols = new ArrayList<TableCol>();
+    for (String id : ids) {
+      if ("badge".equals(id)) cols.add(new TableCol(id, "#", 44, false));
+      else if ("mark".equals(id)) cols.add(new TableCol(id, "Mark", 0, false));
+      else if ("retained".equals(id)) cols.add(new TableCol(id, "Retained MB", 92, true));
+      else if ("delta".equals(id)) cols.add(new TableCol(id, "Δ prev", 72, true));
+      else if ("first".equals(id)) cols.add(new TableCol(id, "Δ first", 76, true));
+      else if ("elapsed".equals(id)) cols.add(new TableCol(id, "Elapsed (s)", 80, true));
+      else if ("gc".equals(id)) cols.add(new TableCol(id, "GC ms", 64, true));
+      else if ("location".equals(id)) cols.add(new TableCol(id, "Location", o.locationWidth, false));
+      else if ("thread".equals(id)) cols.add(new TableCol(id, "Thread", 130, false));
+    }
+    double total = o.width - 48, fixed = 0;
+    TableCol flex = null;
+    for (TableCol c : cols) { if ("mark".equals(c.id)) flex = c; else fixed += c.w; }
+    if (flex != null) {
+      double rest = total - fixed;
+      if (rest < 200) { // squeeze location and thread first
+        for (TableCol c : cols) {
+          if (rest >= 200) break;
+          if ("location".equals(c.id) || "thread".equals(c.id)) {
+            double cut = Math.min(c.w - 70, 200 - rest);
+            if (cut > 0) { c.w -= cut; rest += cut; }
+          }
+        }
+      }
+      flex.w = Math.max(120, rest);
+    } else if (!cols.isEmpty()) {
+      double scale = total / Math.max(1, fixed);
+      if (scale > 1) for (TableCol c : cols) c.w *= scale;
+    }
+    return cols;
+  }
+
+  private static String key(Model m, PngOptions o) {
+    StringBuilder sb = new StringBuilder();
+    sb.append("Line: ").append(m.meta.samplingText()).append(", includes garbage.");
     sb.append(" Numbered dots: retained heap after a forced full GC at each mark.");
+    if (m.gaps != null) {
+      boolean dashed = false, broken = false;
+      for (GapRule.Gap g : m.gaps.gaps) {
+        if (g.to < m.tMin || g.from > m.tMax) continue;
+        if (g.bridged) dashed = true; else broken = true;
+      }
+      if (dashed) sb.append(" Dashed: no sample for over ").append(formatDuration(m.gaps.dashAfterMs))
+          .append(", JVM busy in GC.");
+      if (broken) sb.append(" Gap: no observation (VM paused).");
+    }
     if (m.hiddenBadges > 0) {
       sb.append(' ').append(m.hiddenBadges).append(m.hiddenBadges == 1 ? " badge" : " badges")
           .append(" hidden for space").append(o.includeTable ? "; see the table." : ".");
@@ -532,12 +676,18 @@ public final class PngRenderer {
       g.scale(o.scale, o.scale);
 
       drawHeader(g, m, pal);
+      if (m.marksOnly) {
+        drawTable(g, m, pal);
+        return img;
+      }
       drawBands(g, m, pal);
       drawGrid(g, m, pal, o);
       Shape oldClip = g.getClip();
       g.clip(new Rectangle2D.Double(m.plot.x, m.plot.y - 1, m.plot.w, m.plot.h + 2));
+      drawGcShading(g, m, pal, o);
       drawSeries(g, m, pal, o);
       g.setClip(oldClip);
+      drawBrackets(g, m, pal);
       drawRefs(g, m, pal);
       drawEvents(g, m, pal);
       drawBadges(g, m, pal);
@@ -573,6 +723,64 @@ public final class PngRenderer {
       g.setStroke(new BasicStroke(1f));
       if (b.startTs >= m.tMin) g.draw(new Line2D.Double(x1, m.plot.y, x1, m.plot.bottom()));
       if (b.endTs <= m.tMax && !b.open) g.draw(new Line2D.Double(x2, m.plot.y, x2, m.plot.bottom()));
+    }
+  }
+
+  private static void drawGcShading(Graphics2D g, Model m, Palette pal, PngOptions o) {
+    boolean dark = o.isDark();
+    if (o.shadeForcedGc) {
+      g.setColor(dark ? rgba(0xffffff, 0.07) : rgba(0x0f172a, 0.07));
+      for (Annotations.Row r : m.rows) {
+        Long gms = r.point.gcMs;
+        if (gms == null || gms.longValue() <= 0) continue;
+        double x1 = m.xAt(r.point.timestamp - gms.longValue()), x2 = m.xAt(r.point.timestamp);
+        g.fill(new Rectangle2D.Double(x1, m.plot.y, Math.max(1, x2 - x1), m.plot.h));
+      }
+    }
+    if (m.gc == null || m.gc.regions.isEmpty()) return;
+    Color fill = dark ? rgba(0xff6e6e, 0.10) : rgba(0xd64545, 0.07);
+    Color text = dark ? rgb(0xff9a9a) : rgb(0xb42318);
+    g.setFont(F_REF);
+    for (long[] r : m.gc.regions) {
+      if (r[1] < m.tMin || r[0] > m.tMax) continue;
+      double x1 = Math.max(m.plot.x, m.xAt(r[0])), x2 = Math.min(m.plot.right(), m.xAt(r[1]));
+      if (x2 - x1 < 1) continue;
+      g.setColor(fill);
+      g.fill(new Rectangle2D.Double(x1, m.plot.y, x2 - x1, m.plot.h));
+      String label = "GC overhead " + r[2] + "%";
+      double w = width(F_REF, label);
+      if (x2 - x1 >= w + 8) {
+        g.setColor(text);
+        g.drawString(label, (float) (x1 + 4), (float) (m.plot.bottom() - 6));
+      } else if (x2 - x1 >= width(F_REF, r[2] + "%") + 6) {
+        g.setColor(text);
+        g.drawString(r[2] + "%", (float) (x1 + 3), (float) (m.plot.bottom() - 6));
+      }
+    }
+  }
+
+  private static void drawBrackets(Graphics2D g, Model m, Palette pal) {
+    g.setFont(F_REF);
+    double ascent = F_REF.getLineMetrics("Ag", FRC).getAscent();
+    for (int i = 0; i < m.segments.size(); i++) {
+      Segments.Segment sg = m.segments.get(i);
+      Annotations.Rect r = m.bracketRects.get(i);
+      Color c = Segments.INCREASE.equals(sg.kind) ? pal.up : Segments.RELEASE.equals(sg.kind) ? pal.down : pal.text;
+      double x1 = Math.max(m.plot.x, m.xAt(sg.from.point.timestamp));
+      double x2 = Math.min(m.plot.right(), m.xAt(sg.to.point.timestamp));
+      double ly = r.y + 14;
+      g.setColor(withAlpha(c, 0.9));
+      g.setStroke(new BasicStroke(1.2f));
+      g.draw(new Line2D.Double(x1, ly, x2, ly));
+      g.draw(new Line2D.Double(x1, ly - 3, x1, ly + 3));
+      g.draw(new Line2D.Double(x2, ly - 3, x2, ly + 3));
+      String label = Segments.USER.equals(sg.kind) ? sg.label() : sg.callout();
+      double lw = width(F_REF, label) + 10;
+      double lx = Annotations.clamp((x1 + x2) / 2 - lw / 2, m.plot.x, m.plot.right() - lw);
+      g.setColor(withAlpha(pal.bg, 0.9));
+      g.fill(new RoundRectangle2D.Double(lx, r.y, lw, 13, 4, 4));
+      g.setColor(c);
+      g.drawString(label, (float) (lx + 5), (float) (r.y + (13 + ascent) / 2 - 1.5));
     }
   }
 
@@ -620,22 +828,27 @@ public final class PngRenderer {
   private static void drawSeries(Graphics2D g, Model m, Palette pal, PngOptions o) {
     if (m.seriesLen == 0) return;
     double base = m.yAt(0);
-    Path2D.Double line = new Path2D.Double();
+    Path2D.Double solid = new Path2D.Double();
+    Path2D.Double dashed = new Path2D.Double();
     Path2D.Double area = new Path2D.Double();
+    List<double[]> dots = new ArrayList<double[]>();
     int segStart = 0;
-    for (int i = 0; i <= m.seriesLen; i++) {
-      boolean breakHere = i == m.seriesLen || (i > segStart && m.seriesTs[i] - m.seriesTs[i - 1] > m.gapBreakMs);
-      if (!breakHere) continue;
-      if (i - segStart >= 1) {
-        double x0 = m.xAt(m.seriesTs[segStart]);
-        line.moveTo(x0, m.yAt(m.seriesMB[segStart]));
-        area.moveTo(x0, base);
-        area.lineTo(x0, m.yAt(m.seriesMB[segStart]));
-        for (int k = segStart + 1; k < i; k++) {
-          double x = m.xAt(m.seriesTs[k]), y = m.yAt(m.seriesMB[k]);
-          line.lineTo(x, y);
-          area.lineTo(x, y);
-        }
+    for (int i = 1; i <= m.seriesLen; i++) {
+      int style = i == m.seriesLen ? GapRule.BREAK : m.gaps.style(m.seriesTs[i - 1], m.seriesTs[i]);
+      if (style != GapRule.BREAK) {
+        double x0 = m.xAt(m.seriesTs[i - 1]), y0 = m.yAt(m.seriesMB[i - 1]);
+        double x1 = m.xAt(m.seriesTs[i]), y1 = m.yAt(m.seriesMB[i]);
+        Path2D.Double p = style == GapRule.DASHED ? dashed : solid;
+        p.moveTo(x0, y0);
+        p.lineTo(x1, y1);
+        continue;
+      }
+      // close the continuous section [segStart, i)
+      if (i - segStart == 1) {
+        dots.add(new double[] {m.xAt(m.seriesTs[segStart]), m.yAt(m.seriesMB[segStart])});
+      } else {
+        area.moveTo(m.xAt(m.seriesTs[segStart]), base);
+        for (int k = segStart; k < i; k++) area.lineTo(m.xAt(m.seriesTs[k]), m.yAt(m.seriesMB[k]));
         area.lineTo(m.xAt(m.seriesTs[i - 1]), base);
         area.closePath();
       }
@@ -653,7 +866,10 @@ public final class PngRenderer {
     }
     g.setColor(pal.line);
     g.setStroke(new BasicStroke(1.4f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-    g.draw(line);
+    g.draw(solid);
+    g.setStroke(new BasicStroke(1.4f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_ROUND, 10f, new float[] {5, 4}, 0));
+    g.draw(dashed);
+    for (double[] d : dots) g.fill(new Ellipse2D.Double(d[0] - 1.6, d[1] - 1.6, 3.2, 3.2));
   }
 
   private static void drawRefs(Graphics2D g, Model m, Palette pal) {
@@ -788,6 +1004,9 @@ public final class PngRenderer {
     g.fill(new Ellipse2D.Double(m.plot.x + 20, y - 8, 8, 8));
     g.setColor(pal.mute);
     g.drawString(fitText(F_KEY, m.key, m.width - m.plot.x - 34 - 24), (float) (m.plot.x + 34), y);
+    if (m.key2 != null && !m.key2.isEmpty()) {
+      g.drawString(fitText(F_KEY, m.key2, m.width - m.plot.x - 34 - 24), (float) (m.plot.x + 34), y + 16);
+    }
   }
 
   private static void drawTable(Graphics2D g, Model m, Palette pal) {
@@ -803,20 +1022,15 @@ public final class PngRenderer {
     g.drawString(count, (float) (left + width(F_TABLE_TITLE, "Marks") + 8), (float) (y + titleAscent));
     y += 26;
 
-    double[] colW = tableColumns(right - left);
-    String[] heads = {"#", "Mark", "Retained MB", "Δ prev", "Elapsed (s)", "Location", "Thread"};
-    boolean[] alignRight = {false, false, true, true, true, false, false};
     double ascentHead = F_TABLE_HEAD.getLineMetrics("A", FRC).getAscent();
     double ascent = F_TABLE.getLineMetrics("A", FRC).getAscent();
-
     g.setColor(pal.tableHead);
     g.fill(new Rectangle2D.Double(left, y, right - left, 24));
-    g.setFont(F_TABLE_HEAD);
     g.setColor(pal.mute);
     double x = left;
-    for (int c = 0; c < heads.length; c++) {
-      drawCell(g, F_TABLE_HEAD, heads[c], x, colW[c], y + (24 + ascentHead) / 2 - 1, alignRight[c]);
-      x += colW[c];
+    for (TableCol c : m.columns) {
+      drawCell(g, F_TABLE_HEAD, c.head, x, c.w, y + (24 + ascentHead) / 2 - 1, c.right);
+      x += c.w;
     }
     y += 24;
 
@@ -828,6 +1042,7 @@ public final class PngRenderer {
       y += TABLE_ROW_H;
     }
     double badgeAscent = F_BADGE.getLineMetrics("0", FRC).getAscent();
+    Long firstMB = m.rows.isEmpty() ? null : Long.valueOf(m.rows.get(0).point.usedMB);
     for (int i = 0; i < m.tableRows; i++) {
       Annotations.Row r = m.rows.get(i);
       if (i % 2 == 1) {
@@ -836,37 +1051,44 @@ public final class PngRenderer {
       }
       double base = y + (TABLE_ROW_H + ascent) / 2 - 1;
       x = left;
-      // badge chip
-      Color fill = pal.kind(r.point.kind);
-      double bw = Math.max(Annotations.BADGE_H, width(F_BADGE, r.badge) + 2 * Annotations.BADGE_PAD_X);
-      double by = y + (TABLE_ROW_H - Annotations.BADGE_H) / 2;
-      g.setColor(fill);
-      g.fill(new RoundRectangle2D.Double(x + 6, by, bw, Annotations.BADGE_H, Annotations.BADGE_H, Annotations.BADGE_H));
-      g.setColor(badgeText(fill));
-      g.setFont(F_BADGE);
-      g.drawString(r.badge, (float) (x + 6 + (bw - width(F_BADGE, r.badge)) / 2),
-          (float) (by + (Annotations.BADGE_H + badgeAscent) / 2 - 1));
-      x += colW[0];
-
-      g.setFont(F_TABLE);
-      g.setColor(pal.text);
-      drawCell(g, F_TABLE, rowText(r), x, colW[1], base, false);
-      x += colW[1];
-      drawCell(g, F_TABLE, mbFmt.format(r.point.usedMB), x, colW[2], base, true);
-      x += colW[2];
-      if (r.deltaPrevMB != null) {
-        long d = r.deltaPrevMB.longValue();
-        g.setColor(d > 0 ? pal.up : d < 0 ? pal.down : pal.mute);
-        drawCell(g, F_TABLE, (d > 0 ? "+" : "") + mbFmt.format(d), x, colW[3], base, true);
+      for (TableCol c : m.columns) {
+        g.setColor(pal.text);
+        if ("badge".equals(c.id)) {
+          Color fill = pal.kind(r.point.kind);
+          double bw = Math.max(Annotations.BADGE_H, width(F_BADGE, r.badge) + 2 * Annotations.BADGE_PAD_X);
+          double by = y + (TABLE_ROW_H - Annotations.BADGE_H) / 2;
+          g.setColor(fill);
+          g.fill(new RoundRectangle2D.Double(x + 6, by, bw, Annotations.BADGE_H, Annotations.BADGE_H, Annotations.BADGE_H));
+          g.setColor(badgeText(fill));
+          g.setFont(F_BADGE);
+          g.drawString(r.badge, (float) (x + 6 + (bw - width(F_BADGE, r.badge)) / 2),
+              (float) (by + (Annotations.BADGE_H + badgeAscent) / 2 - 1));
+        } else if ("mark".equals(c.id)) {
+          drawCell(g, F_TABLE, rowText(r), x, c.w, base, false);
+        } else if ("retained".equals(c.id)) {
+          drawCell(g, F_TABLE, mbFmt.format(r.point.usedMB), x, c.w, base, true);
+        } else if ("delta".equals(c.id) || "first".equals(c.id)) {
+          Long d = "delta".equals(c.id) ? r.deltaPrevMB
+              : i == 0 || firstMB == null ? null : Long.valueOf(r.point.usedMB - firstMB.longValue());
+          if (d != null) {
+            long v = d.longValue();
+            g.setColor(v > 0 ? pal.up : v < 0 ? pal.down : pal.mute);
+            drawCell(g, F_TABLE, (v > 0 ? "+" : "") + mbFmt.format(v), x, c.w, base, true);
+          }
+        } else if ("elapsed".equals(c.id)) {
+          drawCell(g, F_TABLE, String.format(Locale.ROOT, "%.1f", r.elapsedMs / 1000.0), x, c.w, base, true);
+        } else if ("gc".equals(c.id)) {
+          g.setColor(pal.mute);
+          if (r.point.gcMs != null) drawCell(g, F_TABLE, mbFmt.format(r.point.gcMs.longValue()), x, c.w, base, true);
+        } else if ("location".equals(c.id)) {
+          g.setColor(pal.mute);
+          drawCell(g, F_MONO, r.shortLocation, x, c.w, base, false);
+        } else if ("thread".equals(c.id)) {
+          g.setColor(pal.mute);
+          drawCell(g, F_TABLE, r.point.threadName == null ? "" : r.point.threadName, x, c.w, base, false);
+        }
+        x += c.w;
       }
-      x += colW[3];
-      g.setColor(pal.text);
-      drawCell(g, F_TABLE, String.format(Locale.ROOT, "%.1f", r.elapsedMs / 1000.0), x, colW[4], base, true);
-      x += colW[4];
-      g.setColor(pal.mute);
-      drawCell(g, F_MONO, r.shortLocation, x, colW[5], base, false);
-      x += colW[5];
-      drawCell(g, F_TABLE, r.point.threadName == null ? "" : r.point.threadName, x, colW[6], base, false);
       y += TABLE_ROW_H;
     }
     if (m.rows.size() > m.tableRows) {
@@ -895,24 +1117,7 @@ public final class PngRenderer {
     return r.text;
   }
 
-  private static double[] tableColumns(double total) {
-    double[] w = {44, 0, 96, 80, 84, 230, 150};
-    double fixed = 0;
-    for (double v : w) fixed += v;
-    double flex = total - fixed;
-    if (flex < 220) {
-      double deficit = 220 - flex;
-      double cut5 = Math.min(w[5] - 110, deficit * 0.6);
-      double cut6 = Math.min(w[6] - 80, deficit - cut5);
-      w[5] -= cut5;
-      w[6] -= cut6;
-      flex = Math.max(120, total - (fixed - cut5 - cut6));
-    }
-    w[1] = flex;
-    return w;
-  }
-
-  private static void drawCell(Graphics2D g, Font f, String text, double x, double w, double baseline, boolean right) {
+  static void drawCell(Graphics2D g, Font f, String text, double x, double w, double baseline, boolean right) {
     if (text == null || text.isEmpty()) return;
     double pad = 8;
     String t = fitText(f, text, w - 2 * pad);
@@ -936,7 +1141,7 @@ public final class PngRenderer {
     };
   }
 
-  private static String fitText(Font f, String s, double maxW) {
+  static String fitText(Font f, String s, double maxW) {
     if (s == null) return "";
     if (width(f, s) <= maxW) return s;
     for (int n = s.length() - 1; n >= 1; n--) {
@@ -946,7 +1151,7 @@ public final class PngRenderer {
     return "";
   }
 
-  private static Color withAlpha(Color c, double a) {
+  static Color withAlpha(Color c, double a) {
     return new Color(c.getRed(), c.getGreen(), c.getBlue(), (int) Math.round(a * 255));
   }
 
@@ -960,7 +1165,7 @@ public final class PngRenderer {
     return mb + " MB";
   }
 
-  private static String formatTick(double mb, boolean gb, double stepMB) {
+  static String formatTick(double mb, boolean gb, double stepMB) {
     if (!gb) return String.valueOf(Math.round(mb));
     double v = mb / 1024.0, step = stepMB / 1024.0;
     int decimals = step >= 1 ? 0 : step >= 0.1 ? 1 : 2;
@@ -985,7 +1190,14 @@ public final class PngRenderer {
     return sb.toString();
   }
 
-  private static String formatDuration(long ms) {
+  static String formatDuration(long ms) {
+    if (ms < 1000) return ms + " ms";
+    if (ms < 60000) return String.format(Locale.ROOT, "%.1f s", ms / 1000.0);
+    return formatElapsed(ms, 1000);
+  }
+
+  /** {@code 850 ms}, {@code 49.6 s}, {@code 9:02}. */
+  static String formatDurationShort(long ms) {
     if (ms < 1000) return ms + " ms";
     if (ms < 60000) return String.format(Locale.ROOT, "%.1f s", ms / 1000.0);
     return formatElapsed(ms, 1000);

@@ -26,6 +26,14 @@ public final class PngOptions {
   boolean clockAxis = false;
   boolean committed = false;
   boolean gcTicks = true;
+  String segments;
+  boolean callouts = true;
+  int gcOverheadPct = GcPressure.DEFAULT_THRESHOLD_PCT;
+  boolean shadeForcedGc = false;
+  boolean marksOnlyTable = false;
+  String tableColumns;
+  int locationWidth = 230;
+  boolean formatLabelNumbers = false;
 
   public static PngOptions defaults() {
     return new PngOptions();
@@ -73,6 +81,38 @@ public final class PngOptions {
   /** Draw GC events as ticks under the x axis (default true). */
   public PngOptions gcTicks(boolean v) { this.gcTicks = v; return this; }
 
+  /**
+   * Segments between marks, {@code "1:2,2:4,5:7"}: drawn as labelled brackets
+   * with the retained-heap change (from the first mark {@code a} to the last mark
+   * {@code b} after it).
+   */
+  public PngOptions segments(String spec) { this.segments = spec == null || spec.trim().isEmpty() ? null : spec; return this; }
+
+  /** Automatic "largest increase" and "largest release" callouts between consecutive marks (default true). */
+  public PngOptions callouts(boolean v) { this.callouts = v; return this; }
+
+  /** Shade time ranges where GC takes at least this share of wall time (default 50; 0 = off). */
+  public PngOptions gcOverhead(int percent) { this.gcOverheadPct = Math.max(0, Math.min(100, percent)); return this; }
+
+  /** Shade the forced GCs of {@code markGc} / {@code scopeGc} (default false). */
+  public PngOptions shadeForcedGc(boolean v) { this.shadeForcedGc = v; return this; }
+
+  /** Only the marks table, without the chart. */
+  public PngOptions marksOnlyTable(boolean v) { this.marksOnlyTable = v; if (v) this.includeTable = true; return this; }
+
+  /**
+   * Marks table columns, comma separated, in order: {@code badge, mark, retained,
+   * delta, first, elapsed, gc, location, thread}. Default: all (gc only when the
+   * run recorded forced-GC time).
+   */
+  public PngOptions tableColumns(String v) { this.tableColumns = v == null || v.trim().isEmpty() ? null : v; return this; }
+
+  /** Width of the location column in logical px (default 230). */
+  public PngOptions locationWidth(int v) { this.locationWidth = Math.max(60, Math.min(1200, v)); return this; }
+
+  /** Thousands separators for numbers inside labels: "(1250000 rows)" becomes "(1,250,000 rows)". */
+  public PngOptions formatLabelNumbers(boolean v) { this.formatLabelNumbers = v; return this; }
+
   public int width() { return width; }
   public int height() { return height; }
   public double scale() { return scale; }
@@ -93,6 +133,14 @@ public final class PngOptions {
     o.clockAxis = clockAxis;
     o.committed = committed;
     o.gcTicks = gcTicks;
+    o.segments = segments;
+    o.callouts = callouts;
+    o.gcOverheadPct = gcOverheadPct;
+    o.shadeForcedGc = shadeForcedGc;
+    o.marksOnlyTable = marksOnlyTable;
+    o.tableColumns = tableColumns;
+    o.locationWidth = locationWidth;
+    o.formatLabelNumbers = formatLabelNumbers;
     return o;
   }
 
@@ -117,6 +165,14 @@ public final class PngOptions {
       else if ("clock".equals(key) || "clockAxis".equals(key)) clockAxis(bool(v));
       else if ("committed".equals(key)) committed(bool(v));
       else if ("gcTicks".equals(key)) gcTicks(bool(v));
+      else if ("segments".equals(key)) segments(v);
+      else if ("callouts".equals(key)) callouts(bool(v));
+      else if ("gcOverhead".equals(key)) gcOverhead(Integer.parseInt(v));
+      else if ("shadeForcedGc".equals(key)) shadeForcedGc(bool(v));
+      else if ("marksOnlyTable".equals(key)) marksOnlyTable(bool(v));
+      else if ("tableColumns".equals(key)) tableColumns(v);
+      else if ("locationWidth".equals(key)) locationWidth(Integer.parseInt(v));
+      else if ("formatLabelNumbers".equals(key)) formatLabelNumbers(bool(v));
       return true;
     } catch (NumberFormatException e) {
       return false;

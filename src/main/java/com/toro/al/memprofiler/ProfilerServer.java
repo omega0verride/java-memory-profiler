@@ -20,6 +20,7 @@ import java.util.concurrent.Executors;
 public class ProfilerServer {
 
   private final HttpServer server;
+  private final java.util.concurrent.ExecutorService executor;
   private final DataStore store;
   private final AutoGcController autoGc;
   private final HeapDumper heapDumper;
@@ -47,7 +48,13 @@ public class ProfilerServer {
     this.heapDumper = heapDumper;
     this.sourceRoots = sourceRoots == null ? new String[0] : sourceRoots.clone();
     this.server = HttpServer.create(new InetSocketAddress(port), 0);
-    this.server.setExecutor(Executors.newFixedThreadPool(4));
+    this.executor = Executors.newFixedThreadPool(4, new java.util.concurrent.ThreadFactory() {
+      private int n;
+      public synchronized Thread newThread(Runnable r) {
+        return new Thread(r, "mem-profiler-http-" + (++n));
+      }
+    });
+    this.server.setExecutor(executor);
     this.server.createContext("/", new Handler());
   }
 
@@ -56,7 +63,11 @@ public class ProfilerServer {
   /** Lets {@code /export/*} use the profiler's title, sampling interval and export options. */
   void setExports(MemoryProfiler profiler) { this.exports = profiler; }
 
-  public void stop() { server.stop(0); }
+  /** Stops the server and its worker threads, so a JVM whose work is done can exit. */
+  public void stop() {
+    server.stop(0);
+    executor.shutdownNow();
+  }
 
   public int port() { return port; }
 
@@ -193,10 +204,14 @@ public class ProfilerServer {
     sb.append(",\"pid\":").append(currentPid());
     sb.append(",\"processName\":");
     appendStringOrNull(sb, currentProcessName());
-    sb.append(",\"intervalMs\":").append(exports != null ? exports.config().intervalMs : 0);
+    sb.append(",\"intervalMs\":").append(configuredIntervalMs());
     sb.append(",\"version\":");
     appendStringOrNull(sb, MemoryProfiler.version());
+    RunHeader h = store.header();
+    sb.append(",\"runId\":");
+    appendStringOrNull(sb, h.runId());
     appendReferences(sb);
+    appendGaps(sb);
     sb.append(",\"points\":[");
     List<DataPoint> snap = store.snapshot();
     for (int i = 0; i < snap.size(); i++) {
@@ -212,8 +227,9 @@ public class ProfilerServer {
     StringBuilder sb = new StringBuilder();
     sb.append("{\"maxObservedMB\":").append(store.maxObservedMB());
     appendReferences(sb);
-    sb.append(",\"points\":[");
     List<DataPoint> pts = store.since(after);
+    if (!pts.isEmpty()) appendGaps(sb);
+    sb.append(",\"points\":[");
     for (int i = 0; i < pts.size(); i++) {
       if (i > 0) sb.append(',');
       sb.append(pts.get(i).toJsonLine());
@@ -230,6 +246,33 @@ public class ProfilerServer {
       sb.append(refs.get(i).toJsonLine());
     }
     sb.append(']');
+  }
+
+  private long configuredIntervalMs() {
+    MemoryProfiler p = exports;
+    return p != null ? p.config().intervalMs : store.header().intervalMs();
+  }
+
+  /**
+   * The gap rule over the in-memory points ({@link GapRule}), so the live chart
+   * breaks, dashes and connects the line exactly as the exports do.
+   */
+  private void appendGaps(StringBuilder sb) {
+    ExportMeta m = new ExportMeta();
+    m.intervalMs = configuredIntervalMs();
+    ProfileStats stats;
+    try {
+      stats = ProfileStats.scan(new PointSource.Store(store, m));
+    } catch (IOException e) {
+      return;
+    }
+    stats.applyTo(m);
+    GapRule.Result gaps = stats.gaps(m.intervalMs);
+    sb.append(",\"samplingText\":");
+    appendStringOrNull(sb, m.samplingText());
+    sb.append(",\"gaps\":");
+    gaps.appendJson(sb);
+    HtmlExporter.appendAnalysis(sb, stats, gaps, GcPressure.DEFAULT_THRESHOLD_PCT, null);
   }
 
   private PointSource exportSource() {
@@ -268,7 +311,8 @@ public class ProfilerServer {
     String q = ex.getRequestURI().getQuery();
     PngOptions opts = PngOptions.defaults();
     String[] keys = {"width", "height", "scale", "from", "to", "fromMark", "toMark", "theme",
-        "includeTable", "title", "clock", "committed", "gcTicks"};
+        "includeTable", "title", "clock", "committed", "gcTicks", "segments", "callouts", "gcOverhead",
+        "shadeForcedGc", "marksOnlyTable", "tableColumns", "locationWidth", "formatLabelNumbers"};
     for (String k : keys) {
       String v = parseString(q, k);
       if (v != null && !opts.set(k, v)) {

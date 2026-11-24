@@ -10,12 +10,15 @@ classpath by `ProfilerServer`.
 ```
 src/main/resources/
   viewer.html              # shell: import map, mount point, loads /web/app.js
+  compare.html             # run comparison page template (export --compare --html), entry web/compare-app.js
   web/
     styles.css             # all CSS (one file for now, no scoped styles)
     state.js               # reactive store (points, selection, view, autogc, heapDumps, snapshot, annotations, theme)
     api.js                 # data source (live polling or embedded snapshot) + fetch wrappers + export helpers
     util.js                # tiny shared helpers (fmtTs, kindClass)
     annotations.js         # badge numbering, marks rows, scope bands, badge/title layout (mirrors Annotations.java)
+    gaps.js                # heap line continuity lookup (solid / dashed / break); the rule itself is GapRule.java
+    compare-app.js         # entry of the run comparison page (export --compare --html); plain DOM + canvas, no Vue
     chart.js               # canvas renderer + pointer/wheel handlers + annotation layers
     vendor/
       vue.esm-browser.prod.js  # Vue 3.4.38, inlined into HTML exports only (MIT, see LICENSE-vue.txt)
@@ -27,7 +30,8 @@ src/main/resources/
       ContextMenu.js       # right-click menu component
       HoverCard.js         # hover popover (+ mark label and snippet)
       HoverHeader.js       # detail bar above the chart
-      MarksTable.js        # marks table under the chart (annotations on)
+      MarksTable.js        # marks table under the chart (annotations on): Δ first, GC ms, hide repeats, copy as Markdown
+      ChartKey.js          # one-line key under the chart: sampling interval, dashed/gap meaning, GC totals
     app.js                 # root component, wires modules + polling
 ```
 
@@ -54,6 +58,21 @@ Rules for code that must also work in a snapshot:
 - Colours come from CSS variables (`:root` and `:root[data-theme="light"]`),
   so the canvas follows the theme. Keep `annotations.js` and
   `Annotations.java` in step: the PNG export uses the same rules.
+
+## Computed on the server, drawn in the browser
+
+Rules that the PNG renderer also applies are computed once in Java and sent as
+data, so the live chart, the HTML export and the PNG cannot disagree:
+
+- `gaps` (`GapRule.java`): where the heap line is dashed or broken; `gaps.js`
+  only looks segments up.
+- `gcPressure` (`GcPressure.java`): GC-overhead regions to shade, totals.
+- `segments` (`Segments.java`): segment brackets and the largest increase /
+  release callouts.
+
+`/data` and `/data/since` (live) and the embedded profile (snapshot) carry the
+same sections. REFERENCE points never belong to `state.points`
+(`splitReferences` moves any stray one to `state.references`).
 
 ## Adding a feature
 

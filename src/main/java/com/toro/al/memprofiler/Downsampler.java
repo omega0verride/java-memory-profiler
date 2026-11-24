@@ -8,7 +8,8 @@ import java.util.List;
 /**
  * Streaming min/max downsampler for SAMPLE points.
  *
- * <p>Every non-SAMPLE point passes through. When there are more samples than
+ * <p>Every non-SAMPLE point passes through, except REFERENCE points, which are
+ * dropped (they are reference lines, not heap readings). When there are more samples than
  * {@code maxSamples}, the samples are split by position into
  * {@code (maxSamples - 2) / 2} equal buckets and each bucket keeps only its
  * lowest and highest {@code usedMB} sample (first occurrence on ties), plus the
@@ -57,6 +58,7 @@ final class Downsampler implements PointSource.Visitor {
 
   public void visit(DataPoint p) {
     if (p.index > lastIndex) return;
+    if (p.kind == DataPoint.Kind.REFERENCE) return; // a line value, never a point
     if (!active) {
       if (p.kind == DataPoint.Kind.SAMPLE) emittedSamples++;
       sink.accept(p);

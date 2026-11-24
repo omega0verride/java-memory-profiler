@@ -10,6 +10,8 @@ import Overlay from './components/Overlay.js';
 import ContextMenu from './components/ContextMenu.js';
 import HoverCard from './components/HoverCard.js';
 import HoverHeader from './components/HoverHeader.js';
+import ChartKey from './components/ChartKey.js';
+import { normalizeGaps, splitReferences } from './gaps.js';
 
 const app = createApp({
   components: {
@@ -21,6 +23,7 @@ const app = createApp({
     'app-hover-card': HoverCard,
     'app-hover-header': HoverHeader,
     'app-marks-table': MarksTable,
+    'app-chart-key': ChartKey,
   },
   setup() {
     const pidLabel = computed(() => state.pid != null && state.pid >= 0 ? String(state.pid) : '-');
@@ -108,6 +111,12 @@ function snapshotChips(m) {
   chips.push({ k: 'JVM max heap', v: fmtHeap(m.jvmMaxHeapMB) });
   chips.push({ k: 'started', v: fmtDateTime(m.startTime) });
   chips.push({ k: 'duration', v: fmtDuration(m.durationMs) });
+  if (m.peakMB > 0) chips.push({ k: 'peak', v: fmtHeap(m.peakMB) });
+  if (m.peakRetainedMB > 0) chips.push({ k: 'peak retained', v: fmtHeap(m.peakRetainedMB) });
+  if (m.gcTotalMs > 0) {
+    const share = m.durationMs > 0 ? Math.round(100 * m.gcTotalMs / m.durationMs) : null;
+    chips.push({ k: 'GC', v: fmtDuration(m.gcTotalMs) + (share != null ? ' (' + share + '%)' : '') });
+  }
   if (m.sampleCount && m.exportedSampleCount && m.exportedSampleCount < m.sampleCount) {
     chips.push({ k: 'samples', v: m.exportedSampleCount + ' of ' + m.sampleCount + ' (min/max)' });
   }
@@ -279,12 +288,17 @@ document.addEventListener('keydown', (e) => {
 async function loadInitial() {
   try {
     const j = await api.dataSource.load();
-    state.points = j.points || [];
+    const split = splitReferences(j.points || []);
+    state.points = split.points;
+    state.gaps = normalizeGaps(j.gaps);
+    state.samplingText = j.samplingText || '';
+    state.gcPressure = j.gcPressure || null;
+    state.segments = j.segments || [];
     state.maxObservedMB = j.maxObservedMB || 0;
     state.jsonlPath = j.jsonlPath;
     state.pid = (typeof j.pid === 'number') ? j.pid : null;
     state.processName = j.processName || null;
-    state.references = j.references || [];
+    state.references = (j.references || []).concat(split.references);
     state.intervalMs = j.intervalMs || 0;
     state.version = j.version || null;
     if (j.meta) state.meta = j.meta;
@@ -314,8 +328,13 @@ async function poll() {
   try {
     const j = await api.dataSource.since(state.lastIndex);
     if (j.references) state.references = j.references;
+    if (j.gaps) state.gaps = normalizeGaps(j.gaps);
+    if (j.gcPressure) state.gcPressure = j.gcPressure;
+    if (j.segments) state.segments = j.segments;
+    if (j.samplingText) state.samplingText = j.samplingText;
     if (j.points && j.points.length) {
-      state.points = state.points.concat(j.points);
+      const split = splitReferences(j.points);
+      state.points = state.points.concat(split.points);
       for (const p of j.points) if (p.index > state.lastIndex) state.lastIndex = p.index;
     }
     state.maxObservedMB = j.maxObservedMB || state.maxObservedMB;

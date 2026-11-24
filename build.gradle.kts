@@ -23,6 +23,8 @@ repositories {
 
 dependencies {
   implementation("org.benf:cfr:0.152")
+  // bundled into the profiler jar too, so code compiled against the API also runs with only the profiler jar
+  implementation(project(":memprofiler-api"))
 
   testImplementation("org.junit.jupiter:junit-jupiter:5.12.2")
   testRuntimeOnly("org.junit.platform:junit-platform-launcher")
@@ -56,7 +58,8 @@ tasks.jar {
       "Can-Retransform-Classes" to "true"
     )
   }
-  // Bundle CFR into the fat jar
+  // Bundle CFR and memprofiler-api into the fat jar
+  dependsOn(configurations.runtimeClasspath)
   from({
     configurations.runtimeClasspath.get().map { if (it.isDirectory) it else zipTree(it) }
   })

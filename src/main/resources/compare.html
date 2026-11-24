@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Heap comparison</title>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #0d1017; --bg-2: #151a24; --card: #121722; --fg: #e8ecf4; --mute: #8791a5; --faint: #5a6478;
+  --grid: #1f2633; --axis: #2c3445; --border: #232a39; --zebra: #11161f; --hover: #1a2130;
+  --up: #ff6e6e; --down: #37c26a; --ref: #ff7a7a; --label-bg: rgba(13, 16, 23, 0.86); --hl: #f0c040;
+  --tip-bg: #151a24; --tip-border: #2c3445; --shadow: rgba(0, 0, 0, 0.45);
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #ffffff; --bg-2: #f3f5f8; --card: #ffffff; --fg: #1b2230; --mute: #5b6578; --faint: #8a93a3;
+  --grid: #e6e9ef; --axis: #c9ced8; --border: #e6e9ef; --zebra: #f9fafb; --hover: #eef3fb;
+  --up: #c43c3c; --down: #15803d; --ref: #d64545; --label-bg: rgba(255, 255, 255, 0.88); --hl: #b7791f;
+  --tip-bg: #ffffff; --tip-border: #d5dae3; --shadow: rgba(15, 23, 42, 0.12);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); }
+body { font: 13px/1.45 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+.wrap { max-width: 1500px; margin: 0 auto; padding: 16px 16px 40px; }
+header { display: flex; gap: 12px; align-items: flex-start; }
+header .titles { flex: 1; min-width: 0; }
+h1 { font-size: 19px; margin: 0 0 2px; font-weight: 650; overflow-wrap: anywhere; }
+.sub { color: var(--mute); font-size: 12.5px; }
+.warn { color: var(--up); font-size: 12px; margin-top: 4px; }
+button { font: inherit; color: var(--fg); background: var(--bg-2); border: 1px solid var(--border);
+  border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button:hover { background: var(--hover); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 6px; }
+.chip { display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--card); cursor: pointer; user-select: none; }
+.chip .sw { width: 18px; height: 3px; border-radius: 2px; }
+.chip .meta { color: var(--mute); font-size: 12px; }
+.chip.off { opacity: 0.45; }
+.chip.off .sw { background: var(--faint) !important; }
+.tools { display: flex; gap: 8px; align-items: center; color: var(--mute); font-size: 12px; margin-bottom: 4px; flex-wrap: wrap; }
+.chart-box { position: relative; border: 1px solid var(--border); border-radius: 8px; background: var(--card); }
+canvas { display: block; width: 100%; height: 520px; cursor: crosshair; touch-action: none; }
+.tip { position: absolute; pointer-events: none; background: var(--tip-bg); border: 1px solid var(--tip-border);
+  border-radius: 8px; padding: 8px 10px; box-shadow: 0 6px 20px var(--shadow); font-size: 12px; min-width: 190px;
+  display: none; z-index: 2; }
+.tip .t { color: var(--mute); margin-bottom: 4px; }
+.tip .r { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.tip .r .sw { width: 12px; height: 3px; border-radius: 2px; flex: none; }
+.tip .r .v { margin-left: auto; font-variant-numeric: tabular-nums; padding-left: 12px; }
+.tip .r .m { color: var(--mute); }
+.key { color: var(--mute); font-size: 12px; margin: 6px 2px 0; }
+h2 { font-size: 14px; margin: 22px 0 8px; font-weight: 650; }
+h2 .hint { color: var(--mute); font-weight: 400; font-size: 12px; margin-left: 8px; }
+.table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+th, td { padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { background: var(--bg-2); color: var(--mute); font-weight: 600; position: sticky; top: 0; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+tbody tr:nth-child(even) td { background: var(--zebra); }
+tbody.marks tr { cursor: pointer; }
+tbody.marks tr:hover td { background: var(--hover); }
+tbody.marks tr.hl td { background: var(--hover); box-shadow: inset 3px 0 0 var(--hl); }
+tbody.summary td { font-weight: 600; }
+tbody.summary tr:first-child td { border-top: 2px solid var(--axis); }
+td .d { display: block; font-size: 11px; font-weight: 400; }
+td .d.up { color: var(--up); } td .d.down { color: var(--down); } td .d.same { color: var(--mute); }
+td.badge { color: var(--mute); white-space: nowrap; }
+th .sw { display: inline-block; width: 12px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+col.off, td.off, th.off { opacity: 0.4; }
+footer { color: var(--faint); font-size: 11.5px; margin-top: 18px; }
+@media (max-width: 700px) { canvas { height: 380px; } header { flex-direction: column; } }
+</style>
+<!-- export:importmap -->
+<!-- /export:importmap -->
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="titles">
+      <h1 id="title"></h1>
+      <div class="sub" id="subtitle"></div>
+      <div class="warn" id="warnings"></div>
+    </div>
+    <button id="theme" title="Switch between the light and dark theme">Theme</button>
+  </header>
+  <div class="legend" id="legend"></div>
+  <div class="tools">
+    <button id="reset">Reset zoom</button>
+    <span>Scroll to zoom time · drag to pan · click a legend chip to hide a run · click a table row to highlight that mark in every run</span>
+  </div>
+  <div class="chart-box" id="chartBox">
+    <canvas id="chart"></canvas>
+    <div class="tip" id="tip"></div>
+  </div>
+  <div class="key" id="key"></div>
+  <h2>Marks <span class="hint">retained MB per run, Δ to the first run; marks are matched by number, repeated numbers by occurrence</span></h2>
+  <div class="table-wrap"><table id="table"></table></div>
+  <footer id="footer"></footer>
+</div>
+<!-- export:entry -->
+<script type="module" src="/web/compare-app.js"></script>
+<!-- /export:entry -->
+</body>
+</html>

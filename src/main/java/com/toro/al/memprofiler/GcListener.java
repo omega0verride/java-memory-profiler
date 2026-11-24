@@ -96,7 +96,7 @@ public class GcListener {
     long durationMs = gcInfo.getDuration();
 
     DataPoint dp = new DataPoint(
-        store.nextIndex(),
+        -1, // assigned by DataStore.add
         System.currentTimeMillis(),
         usedMB,
         committedMB,

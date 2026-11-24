@@ -1,8 +1,10 @@
 package com.toro.al.memprofiler;
 
+import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryMXBean;
 import java.lang.management.MemoryUsage;
+import java.util.List;
 
 public class HeapSampler {
 
@@ -27,10 +29,17 @@ public class HeapSampler {
     running = true;
     thread = new Thread(new Runnable() {
       public void run() {
+        // fixed rate: a tick every intervalMs (sampling time does not add up); after
+        // a stall longer than one interval (a long GC) sample at once, then resume
+        long next = System.currentTimeMillis();
         while (running) {
           try {
             sampleOnce();
-            Thread.sleep(intervalMs);
+            next += intervalMs;
+            long now = System.currentTimeMillis();
+            if (now - next > intervalMs) next = now;
+            long wait = next - now;
+            if (wait > 0) Thread.sleep(wait);
           } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return;
@@ -66,8 +75,9 @@ public class HeapSampler {
     long committedMB = toMB(heap.getCommitted());
     long maxMB = toMB(heap.getMax());
 
+    long gcTotal = gcTotalMs();
     DataPoint dp = new DataPoint(
-        store.nextIndex(),
+        -1,
         System.currentTimeMillis(),
         usedMB,
         committedMB,
@@ -78,11 +88,37 @@ public class HeapSampler {
         null,
         null,
         null,
-        Thread.currentThread().getName()
+        null,
+        Thread.currentThread().getName(),
+        null,
+        gcTotal >= 0 ? Long.valueOf(gcTotal) : null
     );
     store.add(dp);
     if (autoGc != null) {
       autoGc.check(usedMB, store.maxObservedMB());
+    }
+  }
+
+  private static volatile List<GarbageCollectorMXBean> gcBeans;
+
+  /**
+   * Cumulative collection time of all collectors (ms), or -1 if unavailable. The
+   * JVM keeps these counters itself, so they are exact even when GC
+   * notifications are dropped (heap exhausted).
+   */
+  static long gcTotalMs() {
+    try {
+      List<GarbageCollectorMXBean> beans = gcBeans;
+      if (beans == null) gcBeans = beans = ManagementFactory.getGarbageCollectorMXBeans();
+      long total = 0;
+      boolean any = false;
+      for (GarbageCollectorMXBean b : beans) {
+        long t = b.getCollectionTime();
+        if (t >= 0) { total += t; any = true; }
+      }
+      return any ? total : -1;
+    } catch (Throwable t) {
+      return -1;
     }
   }
 

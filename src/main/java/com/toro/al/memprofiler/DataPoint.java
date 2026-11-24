@@ -12,9 +12,11 @@ public class DataPoint {
     AUTO_GC,
     /**
      * A user-defined horizontal reference line ({@link MemoryProfiler#referenceLine}).
-     * {@code usedMB} holds the line's value and {@code label} its caption. Kept out of
-     * the sample stream by {@link DataStore}; it only travels through the JSONL file and
-     * the {@code references} arrays of {@code /data} and the exports.
+     * {@code usedMB} holds the line's value (not a heap reading) and {@code label}
+     * its caption. Never part of the heap line, the peak or any statistic: the store
+     * keeps it apart and it travels in the {@code references} sections of
+     * {@code /data}, the exports and the JSONL {@code META} line. Files written by
+     * 1.0.4 and older hold it as a point line; readers move it to the references.
      */
     REFERENCE
   }
@@ -32,6 +34,19 @@ public class DataPoint {
   public final Long deltaMB;
   public final Long durationMs;
   public final String threadName;
+  /**
+   * MARK, SCOPE_START and SCOPE_END taken with a forced GC ({@code markGc},
+   * {@code scopeGc}): wall time spent in the forced {@code System.gc()} loop just
+   * before the reading. null otherwise.
+   */
+  public final Long gcMs;
+  /**
+   * SAMPLE only: cumulative collection time of all collectors since JVM start
+   * ({@code GarbageCollectorMXBean.getCollectionTime()}). The difference between
+   * two samples is the GC time between them, even when GC notifications were
+   * lost (the JVM drops them when the heap is exhausted). null when unknown.
+   */
+  public final Long gcTotalMs;
 
   public DataPoint(long index, long timestamp, long usedMB, long committedMB, long maxMB,
                    Kind kind, String label, String location, String scopeId,
@@ -43,6 +58,13 @@ public class DataPoint {
   public DataPoint(long index, long timestamp, long usedMB, long committedMB, long maxMB,
                    Kind kind, String label, String location, String sourceFile, String scopeId,
                    Long deltaMB, Long durationMs, String threadName) {
+    this(index, timestamp, usedMB, committedMB, maxMB, kind, label, location, sourceFile, scopeId,
+        deltaMB, durationMs, threadName, null, null);
+  }
+
+  public DataPoint(long index, long timestamp, long usedMB, long committedMB, long maxMB,
+                   Kind kind, String label, String location, String sourceFile, String scopeId,
+                   Long deltaMB, Long durationMs, String threadName, Long gcMs, Long gcTotalMs) {
     this.index = index;
     this.timestamp = timestamp;
     this.usedMB = usedMB;
@@ -56,9 +78,34 @@ public class DataPoint {
     this.deltaMB = deltaMB;
     this.durationMs = durationMs;
     this.threadName = threadName;
+    this.gcMs = gcMs;
+    this.gcTotalMs = gcTotalMs;
+  }
+
+  /** This point with another index (the store assigns indexes when it appends). */
+  public DataPoint withIndex(long newIndex) {
+    if (newIndex == index) return this;
+    return new DataPoint(newIndex, timestamp, usedMB, committedMB, maxMB, kind, label, location,
+        sourceFile, scopeId, deltaMB, durationMs, threadName, gcMs, gcTotalMs);
+  }
+
+  /** This point with another scope id (concatenated "all" exports keep scope ids unique). */
+  DataPoint withIndexAndScope(long newIndex, String newScopeId) {
+    return new DataPoint(newIndex, timestamp, usedMB, committedMB, maxMB, kind, label, location,
+        sourceFile, newScopeId, deltaMB, durationMs, threadName, gcMs, gcTotalMs);
+  }
+
+  /** True for every kind that is a heap reading (everything but {@link Kind#REFERENCE}). */
+  public boolean isHeapReading() {
+    return kind != Kind.REFERENCE;
   }
 
   public String toJsonLine() {
+    return toJsonLine(null);
+  }
+
+  /** One JSONL line; {@code runId} (may be null) is appended as the last key. */
+  public String toJsonLine(String runId) {
     StringBuilder sb = new StringBuilder(256);
     sb.append('{');
     sb.append("\"index\":").append(index);
@@ -74,15 +121,28 @@ public class DataPoint {
     if (deltaMB != null) sb.append(",\"deltaMB\":").append(deltaMB);
     if (durationMs != null) sb.append(",\"durationMs\":").append(durationMs);
     if (threadName != null) sb.append(",\"thread\":\"").append(escape(threadName)).append('"');
+    if (gcMs != null) sb.append(",\"gcMs\":").append(gcMs);
+    if (gcTotalMs != null) sb.append(",\"gcTotalMs\":").append(gcTotalMs);
+    if (runId != null) sb.append(",\"runId\":\"").append(escape(runId)).append('"');
     sb.append('}');
     return sb.toString();
   }
 
-  private static String escape(String s) {
-    return s.replace("\\", "\\\\")
-            .replace("\"", "\\\"")
-            .replace("\n", "\\n")
-            .replace("\r", "\\r")
-            .replace("\t", "\\t");
+  static String escape(String s) {
+    StringBuilder sb = new StringBuilder(s.length() + 8);
+    for (int i = 0; i < s.length(); i++) {
+      char c = s.charAt(i);
+      switch (c) {
+        case '\\': sb.append("\\\\"); break;
+        case '"': sb.append("\\\""); break;
+        case '\n': sb.append("\\n"); break;
+        case '\r': sb.append("\\r"); break;
+        case '\t': sb.append("\\t"); break;
+        default:
+          if (c < 0x20) sb.append(String.format("\\u%04x", (int) c));
+          else sb.append(c);
+      }
+    }
+    return sb.toString();
   }
 }

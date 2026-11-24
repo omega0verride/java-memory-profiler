@@ -68,7 +68,7 @@ public class AutoGcController {
 
   private void recordTrigger(String reason, long usedMB) {
     DataPoint dp = new DataPoint(
-        store.nextIndex(),
+        -1, // assigned by DataStore.add
         System.currentTimeMillis(),
         usedMB,
         usedMB,

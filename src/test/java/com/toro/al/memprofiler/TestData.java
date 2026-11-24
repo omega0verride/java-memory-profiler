@@ -32,6 +32,18 @@ final class TestData {
           "G1 Young Generation / G1 Evacuation Pause", null, null, Long.valueOf(-50), Long.valueOf(7), "Service Thread"));
     }
 
+    /** A GC event that ends at {@code ts} after a pause of {@code pauseMs}. */
+    DataPoint gcPause(long ts, long used, long pauseMs) {
+      return add(new DataPoint(index++, ts, used, used + 300, maxMB, DataPoint.Kind.GC, "end of major GC",
+          "PS MarkSweep / Ergonomics", null, null, Long.valueOf(0), Long.valueOf(pauseMs), "Service Thread"));
+    }
+
+    /** A sample with the cumulative GC time counter. */
+    DataPoint sampleWithGc(long ts, long used, long gcTotalMs) {
+      return add(new DataPoint(index++, ts, used, used + 300, maxMB, DataPoint.Kind.SAMPLE,
+          null, null, null, null, null, null, "mem-profiler-sampler", null, Long.valueOf(gcTotalMs)));
+    }
+
     DataPoint scopeStart(long ts, long used, String label, String id) {
       return add(new DataPoint(index++, ts, used, used + 300, maxMB, DataPoint.Kind.SCOPE_START, label,
           "com.acme.Job.run:10", "com/acme/Job.java:10", id, null, null, "main"));

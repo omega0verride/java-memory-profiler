@@ -18,7 +18,10 @@ import java.lang.instrument.Instrumentation;
  *   <li>{@code intervalMs}   — background sampler interval (default 500)</li>
  *   <li>{@code maxPoints}    — in-memory buffer size (default 20000)</li>
  *   <li>{@code port}         — fixed live-UI port (default auto)</li>
- *   <li>{@code jsonl}        — append all data points to this path</li>
+ *   <li>{@code jsonl}        — write all data points to this path</li>
+ *   <li>{@code jsonlMode}    — {@code overwrite} (default) or {@code append}</li>
+ *   <li>{@code skipCallers}  — class-name prefixes to skip for mark locations, separated by {@code ;}</li>
+ *   <li>{@code keepUiAfterStop} — seconds to keep the UI up after the run, then exit (default: until killed)</li>
  *   <li>{@code openBrowser}  — open default browser at startup (default true)</li>
  *   <li>{@code startServer}  — run the live HTTP server (default true)</li>
  *   <li>{@code gcListener}   — subscribe to JVM GC notifications (default true)</li>
@@ -27,6 +30,7 @@ import java.lang.instrument.Instrumentation;
  *   <li>{@code heapDumpOpenerPath} — path to the opener binary (default auto-detect)</li>
  *   <li>{@code sourceRoots}  — source roots, separated by {@code ;} (Open in IDE, HTML snippets)</li>
  *   <li>{@code title}        — chart title for exports</li>
+ *   <li>{@code subtitle}     — chart subtitle for exports</li>
  *   <li>{@code exportHtml}   — write an interactive HTML export here when the JVM exits</li>
  *   <li>{@code exportPng}    — write a PNG of the whole run here when the JVM exits</li>
  *   <li>{@code png.<option>} — PNG options, e.g. {@code png.includeTable=true,png.theme=dark,png.width=1600}</li>
@@ -68,6 +72,11 @@ public final class ProfilerAgent {
         else if ("maxPoints".equals(k))  cfg.maxPoints(Integer.parseInt(v));
         else if ("port".equals(k))       cfg.port(Integer.parseInt(v));
         else if ("jsonl".equals(k))      cfg.jsonl(v);
+        else if ("jsonlMode".equals(k))  cfg.jsonlMode("append".equalsIgnoreCase(v)
+            ? MemoryProfiler.JsonlMode.APPEND : MemoryProfiler.JsonlMode.OVERWRITE);
+        else if ("skipCallers".equals(k)) cfg.skipCallerPrefixes(v.split(";"));
+        else if ("keepUiAfterStop".equals(k)) cfg.keepUiAfterStop(java.time.Duration.ofSeconds(Long.parseLong(v)));
+        else if ("subtitle".equals(k))   cfg.subtitle(v);
         else if ("openBrowser".equals(k)) cfg.openBrowser(Boolean.parseBoolean(v));
         else if ("startServer".equals(k)) cfg.startServer(Boolean.parseBoolean(v));
         else if ("gcListener".equals(k)) cfg.gcListener(Boolean.parseBoolean(v));

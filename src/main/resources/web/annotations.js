@@ -18,6 +18,12 @@ export const BAND_AREA = 2 * TITLE_ROW_H + 8;
 
 const NUMBERED = /^\s*(\d+)\.(?:\s+|$)/;
 
+/** Thousands separators for integers of five or more digits in a label (Annotations.formatNumbers). */
+export function formatNumbers(text) {
+  if (text == null) return text;
+  return String(text).replace(/(?<![\d.,])\d{5,}(?![.,]\d)/g, (d) => Number(d).toLocaleString('en-US'));
+}
+
 export function isAnnotated(kind) {
   return kind === 'MARK' || kind === 'SCOPE_START' || kind === 'SCOPE_END';
 }

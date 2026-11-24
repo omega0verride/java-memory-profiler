@@ -279,6 +279,7 @@ export default {
     const goToPeak = () => {
       let peak = null;
       for (const p of state.points) {
+        if (p.kind === 'REFERENCE') continue; // a line value, not a heap reading
         if (!peak || p.usedMB > peak.usedMB) peak = p;
       }
       if (peak) {

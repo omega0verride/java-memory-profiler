@@ -12,7 +12,10 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.net.ServerSocket;
 import java.net.URI;
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
@@ -41,6 +44,14 @@ import java.util.function.Consumer;
  */
 public final class MemoryProfiler {
 
+  /** What {@link Config#jsonl(String)} does with an existing file. */
+  public enum JsonlMode {
+    /** Add this run to the end of the file (one file, several runs; see {@code export --list-runs}). */
+    APPEND,
+    /** Replace the file (default). */
+    OVERWRITE
+  }
+
   /**
    * Fluent config. Build one and pass to {@link #start(Config)}, or use the
    * {@link #start(Consumer)} overload for inline configuration.
@@ -50,6 +61,9 @@ public final class MemoryProfiler {
     int maxPoints = 20000;
     int port = 0;
     String jsonlPath = null;
+    JsonlMode jsonlMode = JsonlMode.OVERWRITE;
+    String[] skipCallerPrefixes = new String[0];
+    long keepUiAfterStopMs = -1;
     boolean openBrowser = true;
     boolean startServer = true;
     boolean gcListener = true;
@@ -76,6 +90,37 @@ public final class MemoryProfiler {
     public Config maxPoints(int v)        { this.maxPoints = v; return this; }
     public Config port(int v)             { this.port = v; return this; }
     public Config jsonl(String path)      { this.jsonlPath = path; return this; }
+
+    /**
+     * {@link JsonlMode#OVERWRITE} (default) replaces an existing JSONL file;
+     * {@link JsonlMode#APPEND} adds the run to it. Every run starts with a
+     * {@code META} line and every point carries the run id, so appended runs are
+     * always told apart.
+     */
+    public Config jsonlMode(JsonlMode mode) { this.jsonlMode = mode == null ? JsonlMode.OVERWRITE : mode; return this; }
+
+    /**
+     * Extra class-name prefixes to skip when a mark, scope or heap dump records
+     * its caller location, for helpers between your code and the profiler (for
+     * example a reflection bridge, {@code "com.acme.util.ProfilerHooks"}).
+     * Adds to the system property {@code memprofiler.skipCallers} (comma or
+     * semicolon separated) and the {@code skipCallers} agent argument.
+     */
+    public Config skipCallerPrefixes(String... prefixes) {
+      this.skipCallerPrefixes = prefixes == null ? new String[0] : prefixes.clone();
+      return this;
+    }
+
+    /**
+     * After {@link #stop()}, keep serving the UI for this long, then shut down
+     * (so the JVM can exit normally). The on-stop exports are written before the
+     * wait. {@link MemoryProfiler#await()} returns when the time is up. Null or
+     * negative = keep the UI until {@code shutdown()} (default).
+     */
+    public Config keepUiAfterStop(Duration d) {
+      this.keepUiAfterStopMs = d == null || d.isNegative() ? -1 : d.toMillis();
+      return this;
+    }
     public Config openBrowser(boolean v)  { this.openBrowser = v; return this; }
     public Config startServer(boolean v)  { this.startServer = v; return this; }
     public Config gcListener(boolean v)   { this.gcListener = v; return this; }
@@ -187,6 +232,10 @@ public final class MemoryProfiler {
   }
 
   private static MemoryProfiler INSTANCE;
+  /** Owner of the no-op scopes returned while the profiler is not running (created on first use). */
+  private static final class NoopScopes {
+    static final MemoryProfiler OWNER = new MemoryProfiler(Config.defaults());
+  }
 
   private final Config config;
   private final DataStore store;
@@ -206,7 +255,10 @@ public final class MemoryProfiler {
     this.config = config;
     this.title = config.title;
     this.subtitle = config.subtitle;
-    this.store = new DataStore(config.maxPoints);
+    RunHeader header = RunHeader.forThisJvm(config.intervalMs);
+    header.title = config.title;
+    header.subtitle = config.subtitle;
+    this.store = new DataStore(config.maxPoints, header);
     this.autoGc = new AutoGcController(store, config.gcPasses, config.gcPauseMs);
     if (config.autoGcNearPeak) this.autoGc.setNearPeakEnabled(true);
     if (config.autoGcThreshold) {
@@ -235,7 +287,7 @@ public final class MemoryProfiler {
     if (INSTANCE != null) return INSTANCE;
     MemoryProfiler p = new MemoryProfiler(config);
     try {
-      if (config.jsonlPath != null) p.store.enableJsonl(config.jsonlPath);
+      if (config.jsonlPath != null) p.store.enableJsonl(config.jsonlPath, config.jsonlMode == JsonlMode.APPEND);
       if (config.startServer) {
         int port = config.port > 0 ? config.port : findFreePort();
         p.server = new ProfilerServer(port, p.store, p.autoGc, p.heapDumper, config.sourceRoots);
@@ -271,7 +323,38 @@ public final class MemoryProfiler {
     INSTANCE.gcListener.stop();
     INSTANCE.store.flush();
     INSTANCE.runOnStopExports();
-    System.out.println("[memprofiler] profiling stopped – UI still available");
+    long keep = INSTANCE.config.keepUiAfterStopMs;
+    if (keep >= 0 && INSTANCE.server != null) {
+      System.out.println("[memprofiler] profiling stopped – UI available for " + (keep / 1000) + " s more");
+      INSTANCE.scheduleShutdown(keep);
+    } else if (keep >= 0) {
+      shutdown();
+    } else {
+      System.out.println("[memprofiler] profiling stopped – UI still available");
+    }
+  }
+
+  private final Object shutdownLatch = new Object();
+  private volatile boolean shutDown = false;
+  private Thread shutdownTimer;
+
+  private synchronized void scheduleShutdown(final long afterMs) {
+    if (shutdownTimer != null) return;
+    final MemoryProfiler self = this;
+    shutdownTimer = new Thread(new Runnable() {
+      public void run() {
+        try {
+          Thread.sleep(afterMs);
+        } catch (InterruptedException e) {
+          return;
+        }
+        synchronized (MemoryProfiler.class) {
+          if (INSTANCE == self) shutdown();
+        }
+      }
+    }, "mem-profiler-ui-timeout");
+    shutdownTimer.setDaemon(true);
+    shutdownTimer.start();
   }
 
   /**
@@ -285,12 +368,51 @@ public final class MemoryProfiler {
    * </pre>
    */
   public static void await() {
-    if (INSTANCE == null || INSTANCE.server == null) return;
+    MemoryProfiler p = INSTANCE;
+    if (p == null || p.server == null) return;
+    if (p.config.keepUiAfterStopMs >= 0) {
+      // the UI shuts down on its own (keepUiAfterStop); wait for that, not forever
+      System.out.println("[memprofiler] awaiting – the UI closes " + (p.config.keepUiAfterStopMs / 1000)
+          + " s after stop()");
+      p.waitForShutdown(Long.MAX_VALUE);
+      return;
+    }
     System.out.println("[memprofiler] awaiting – press Ctrl-C to exit");
-    try {
-      Thread.currentThread().join();
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
+    p.waitForShutdown(Long.MAX_VALUE);
+  }
+
+  /**
+   * Keeps the UI up for at most {@code d} (or until {@link #shutdown()} is called
+   * elsewhere), then shuts the profiler down and returns, so the JVM can exit
+   * normally. Use it at the end of a test instead of {@link #await()}, which
+   * blocks until the JVM is killed.
+   */
+  public static void await(Duration d) {
+    MemoryProfiler p = INSTANCE;
+    if (p == null) return;
+    long ms = d == null || d.isNegative() ? 0 : d.toMillis();
+    if (p.server != null && ms > 0) {
+      System.out.println("[memprofiler] UI available for " + (ms / 1000) + " s");
+      p.waitForShutdown(ms);
+    }
+    synchronized (MemoryProfiler.class) {
+      if (INSTANCE == p) shutdown();
+    }
+  }
+
+  private void waitForShutdown(long maxMs) {
+    long deadline = maxMs == Long.MAX_VALUE ? Long.MAX_VALUE : System.currentTimeMillis() + maxMs;
+    synchronized (shutdownLatch) {
+      while (!shutDown) {
+        long left = deadline == Long.MAX_VALUE ? 0 : deadline - System.currentTimeMillis();
+        if (deadline != Long.MAX_VALUE && left <= 0) return;
+        try {
+          shutdownLatch.wait(left);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          return;
+        }
+      }
     }
   }
 
@@ -305,7 +427,12 @@ public final class MemoryProfiler {
     INSTANCE.runOnStopExports();
     if (INSTANCE.server != null) INSTANCE.server.stop();
     INSTANCE.store.close();
+    MemoryProfiler p = INSTANCE;
     INSTANCE = null;
+    synchronized (p.shutdownLatch) {
+      p.shutDown = true;
+      p.shutdownLatch.notifyAll();
+    }
   }
 
   public static MemoryProfiler get() { return INSTANCE; }
@@ -319,7 +446,16 @@ public final class MemoryProfiler {
    * force a GC — cheap enough for hot paths.
    */
   public static void mark(String label) {
-    doMark(label, false);
+    doMark(label, false, 0);
+  }
+
+  /**
+   * Like {@link #mark(String)}, for helpers: the recorded location skips
+   * {@code extraFramesToSkip} more frames of your code (1 = the caller of the
+   * method that calls this one).
+   */
+  public static void mark(String label, int extraFramesToSkip) {
+    doMark(label, false, extraFramesToSkip);
   }
 
   /**
@@ -327,18 +463,27 @@ public final class MemoryProfiler {
    * want the reading to reflect live (non-reclaimable) memory only.
    */
   public static void markGc(String label) {
-    doMark(label, true);
+    doMark(label, true, 0);
   }
 
-  private static void doMark(String label, boolean gc) {
+  /**
+   * Like {@link #markGc(String)}, for helpers such as a reflection bridge: the
+   * recorded location skips {@code extraFramesToSkip} more frames of your code,
+   * so it points at the real caller instead of the helper.
+   */
+  public static void markGc(String label, int extraFramesToSkip) {
+    doMark(label, true, extraFramesToSkip);
+  }
+
+  private static void doMark(String label, boolean gc, int extraFrames) {
     MemoryProfiler p = INSTANCE;
     if (p == null) return;
-    if (gc) forceGc(p.config.gcPasses, p.config.gcPauseMs);
+    Long gcMs = gc ? Long.valueOf(forceGc(p.config.gcPasses, p.config.gcPauseMs)) : null;
     MemoryUsage heap = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage();
     long usedMB = HeapSampler.toMB(heap.getUsed());
-    CallerInfo caller = callerInfo();
+    CallerInfo caller = callerInfo(extraFrames);
     DataPoint dp = new DataPoint(
-        p.store.nextIndex(),
+        -1,
         System.currentTimeMillis(),
         usedMB,
         HeapSampler.toMB(heap.getCommitted()),
@@ -350,9 +495,11 @@ public final class MemoryProfiler {
         null,
         null,
         null,
-        Thread.currentThread().getName()
+        Thread.currentThread().getName(),
+        gcMs,
+        null
     );
-    p.store.add(dp);
+    dp = p.store.add(dp);
     System.out.println("[memprofiler] mark " + label + " -> " + usedMB + " MB (" + dp.location + ")");
   }
 
@@ -373,16 +520,16 @@ public final class MemoryProfiler {
 
   private static Scope openScope(String label, boolean gc) {
     MemoryProfiler p = INSTANCE;
-    if (p == null) return new MemoryProfiler(Config.defaults()).new Scope("noop", label, 0, 0, gc);
-    if (gc) forceGc(p.config.gcPasses, p.config.gcPauseMs);
+    if (p == null) return NoopScopes.OWNER.new Scope("noop", label, 0, 0, gc);
+    Long gcMs = gc ? Long.valueOf(forceGc(p.config.gcPasses, p.config.gcPauseMs)) : null;
     long now = System.currentTimeMillis();
     MemoryUsage heap = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage();
     long usedMB = HeapSampler.toMB(heap.getUsed());
     String id = "s" + p.scopeCounter.incrementAndGet();
-    CallerInfo caller = callerInfo();
+    CallerInfo caller = callerInfo(0);
 
     DataPoint start = new DataPoint(
-        p.store.nextIndex(),
+        -1,
         now,
         usedMB,
         HeapSampler.toMB(heap.getCommitted()),
@@ -394,7 +541,9 @@ public final class MemoryProfiler {
         id,
         null,
         null,
-        Thread.currentThread().getName()
+        Thread.currentThread().getName(),
+        gcMs,
+        null
     );
     p.store.add(start);
 
@@ -410,16 +559,16 @@ public final class MemoryProfiler {
     synchronized (openScopes) {
       openScopes.remove(s.id);
     }
-    if (s.gc) forceGc(config.gcPasses, config.gcPauseMs);
+    Long gcMs = s.gc ? Long.valueOf(forceGc(config.gcPasses, config.gcPauseMs)) : null;
     long now = System.currentTimeMillis();
     MemoryUsage heap = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage();
     long usedMB = HeapSampler.toMB(heap.getUsed());
     long delta = usedMB - s.startUsedMB;
     long duration = now - s.startTime;
 
-    CallerInfo caller = callerInfo();
+    CallerInfo caller = callerInfo(0);
     DataPoint end = new DataPoint(
-        store.nextIndex(),
+        -1,
         now,
         usedMB,
         HeapSampler.toMB(heap.getCommitted()),
@@ -431,7 +580,9 @@ public final class MemoryProfiler {
         s.id,
         Long.valueOf(delta),
         Long.valueOf(duration),
-        Thread.currentThread().getName()
+        Thread.currentThread().getName(),
+        gcMs,
+        null
     );
     store.add(end);
     System.out.println("[memprofiler] scope " + s.label + " done dt=" + duration + "ms delta=" + delta + "MB now=" + usedMB + "MB");
@@ -483,16 +634,17 @@ public final class MemoryProfiler {
   /**
    * Adds a dashed horizontal reference line to the chart and the exports, for
    * example {@code referenceLine(5120, "Production heap limit (5 GB)")}. It is
-   * also written to the JSONL file (kind {@code REFERENCE}), so exports made
-   * later from that file show it.
+   * also written to the JSONL file (in the {@code references} of the run's
+   * {@code META} line), so exports made later from that file show it. The value
+   * is never treated as a heap reading (peak, statistics, the heap line).
    */
   public static void referenceLine(long mb, String label) {
     MemoryProfiler p = INSTANCE;
     if (p == null) return;
     MemoryUsage heap = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage();
-    CallerInfo caller = callerInfo();
+    CallerInfo caller = callerInfo(0);
     p.store.add(new DataPoint(
-        p.store.nextIndex(),
+        -1,
         System.currentTimeMillis(),
         mb,
         HeapSampler.toMB(heap.getCommitted()),
@@ -510,7 +662,9 @@ public final class MemoryProfiler {
   /** Sets the chart title used by the exports (the subtitle stays process, PID and start time). */
   public static void title(String title) {
     MemoryProfiler p = INSTANCE;
-    if (p != null) p.title = title;
+    if (p == null) return;
+    p.title = title;
+    p.store.setTitles(p.title, p.subtitle);
   }
 
   /** Sets the chart title and subtitle used by the exports. */
@@ -519,6 +673,15 @@ public final class MemoryProfiler {
     if (p == null) return;
     p.title = title;
     p.subtitle = subtitle;
+    p.store.setTitles(title, subtitle);
+  }
+
+  /** Sets the subtitle used by the exports (and recorded in the JSONL). */
+  public static void subtitle(String subtitle) {
+    MemoryProfiler p = INSTANCE;
+    if (p == null) return;
+    p.subtitle = subtitle;
+    p.store.setTitles(p.title, subtitle);
   }
 
   // ---- exports ----
@@ -580,6 +743,7 @@ public final class MemoryProfiler {
     m.processName = ProfilerServer.currentProcessName();
     m.pid = ProfilerServer.currentPid();
     m.intervalMs = config.intervalMs;
+    m.runId = store.header().runId();
     m.source = "live";
     return new PointSource.Store(store, m);
   }
@@ -644,9 +808,9 @@ public final class MemoryProfiler {
     // Record a HEAP_DUMP data point on the timeline
     MemoryUsage heap = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage();
     long usedMB = HeapSampler.toMB(heap.getUsed());
-    CallerInfo caller = callerInfo();
+    CallerInfo caller = callerInfo(0);
     DataPoint dp = new DataPoint(
-        p.store.nextIndex(),
+        -1,
         System.currentTimeMillis(),
         usedMB,
         HeapSampler.toMB(heap.getCommitted()),
@@ -672,16 +836,19 @@ public final class MemoryProfiler {
 
   // ---- internals ----
 
-  private static void forceGc(int passes, long pauseMs) {
+  /** Runs the forced GC loop; returns the wall time it took (ms). */
+  private static long forceGc(int passes, long pauseMs) {
+    long t0 = System.nanoTime();
     for (int i = 0; i < passes; i++) {
       System.gc();
       try {
         Thread.sleep(pauseMs);
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
-        return;
+        break;
       }
     }
+    return (System.nanoTime() - t0) / 1000000L;
   }
 
   static final class CallerInfo {
@@ -694,10 +861,31 @@ public final class MemoryProfiler {
     static final CallerInfo UNKNOWN = new CallerInfo("unknown", null);
   }
 
-  private static CallerInfo callerInfo() {
+  /** System property with extra caller prefixes to skip (comma or semicolon separated). */
+  public static final String SKIP_CALLERS_PROPERTY = "memprofiler.skipCallers";
+
+  /** Configured and system-property prefixes of frames to skip when recording a location. */
+  static List<String> skipCallerPrefixes() {
+    List<String> out = new ArrayList<String>();
+    MemoryProfiler p = INSTANCE;
+    if (p != null) {
+      for (String s : p.config.skipCallerPrefixes) if (s != null && !s.trim().isEmpty()) out.add(s.trim());
+    }
+    String prop = System.getProperty(SKIP_CALLERS_PROPERTY);
+    if (prop != null) {
+      for (String s : prop.split("[,;]")) if (!s.trim().isEmpty()) out.add(s.trim());
+    }
+    return out;
+  }
+
+  static CallerInfo callerInfo(int extraFrames) {
+    List<String> skip = skipCallerPrefixes();
+    int toSkip = Math.max(0, extraFrames);
     StackTraceElement[] stack = Thread.currentThread().getStackTrace();
+    frames:
     for (StackTraceElement e : stack) {
       String cn = e.getClassName();
+      for (int i = 0; i < skip.size(); i++) if (cn.startsWith(skip.get(i))) continue frames;
       if (cn.equals(MemoryProfiler.class.getName())) continue;
       if (cn.startsWith("java.lang.Thread")) continue;
       // the profiler's own frames; the bundled Demo is user code for this purpose
@@ -711,6 +899,10 @@ public final class MemoryProfiler {
       if (cn.contains("$$Lambda")) continue;
       if (cn.contains("$$FastClassBy")) continue;
       if (cn.startsWith("com.sun.proxy.")) continue;
+      if (toSkip > 0) {
+        toSkip--;
+        continue;
+      }
 
       int line = e.getLineNumber();
       String display = cn + "." + e.getMethodName() + (line > 0 ? ":" + line : "");

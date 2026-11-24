@@ -86,7 +86,7 @@ export default {
     const searchText = ref('');
     const sortBy = ref('time-desc');
     
-    const events = computed(() => state.points.filter(p => p.kind !== 'SAMPLE'));
+    const events = computed(() => state.points.filter(p => p.kind !== 'SAMPLE' && p.kind !== 'REFERENCE'));
     
     const filteredEvents = computed(() => {
       let result = events.value;

@@ -1,6 +1,6 @@
 import { computed, ref, watchEffect, onMounted, onUnmounted } from 'vue';
 import { state, clearSelection, selectPoint, ensureVisible } from '../state.js';
-import { openLocation } from '../api.js';
+import { openLocation, downloadPngExport } from '../api.js';
 import { fmtTs, kindClass, SNAPSHOT_TIP } from '../util.js';
 
 const MINI_CHART_WINDOW = 30; // number of points to show on each side
@@ -129,6 +129,14 @@ export default {
             <div class="metric-label">Scopes</div>
             <div class="metric-value">{{ rangeStats.scopeCount }}</div>
           </div>
+        </div>
+
+        <div class="range-export">
+          <button class="tool-btn" @click="copyRange" title="Copy start, end, retained delta and duration as a Markdown table row">
+            {{ rangeCopied ? 'Copied' : 'Copy as Markdown' }}
+          </button>
+          <button class="tool-btn" :disabled="state.snapshot" @click="exportRangePng"
+                  :title="state.snapshot ? snapshotTip : 'Render this range (with the marks table) as a PNG'">Export PNG</button>
         </div>
       </div>
 
@@ -518,7 +526,27 @@ export default {
       }
     });
 
+    const rangeCopied = ref(false);
+    const exportRangePng = () => {
+      if (!rangeStart.value || !rangeEnd.value) return;
+      downloadPngExport({ from: rangeStart.value.timestamp, to: rangeEnd.value.timestamp, includeTable: true,
+        theme: state.theme === 'dark' ? 'dark' : 'light' });
+    };
+    const copyRange = async () => {
+      const a = rangeStart.value, b = rangeEnd.value;
+      if (!a || !b) return;
+      const name = (p) => String(p.label || p.kind + ' #' + p.index).replace(/\|/g, '\\|');
+      const d = b.usedMB - a.usedMB;
+      const text = '| From | To | Δ MB | Duration | Min MB | Max MB |\n| --- | --- | ---: | ---: | ---: | ---: |\n'
+        + '| ' + name(a) + ' | ' + name(b) + ' | ' + (d > 0 ? '+' : '') + d.toLocaleString('en-US') + ' | '
+        + rangeStats.value.durationStr + ' | ' + rangeStats.value.minUsed + ' | ' + rangeStats.value.maxUsed + ' |\n';
+      try { await navigator.clipboard.writeText(text); } catch (e) { /* clipboard blocked */ }
+      rangeCopied.value = true;
+      setTimeout(() => { rangeCopied.value = false; }, 1500);
+    };
+
     return {
+      rangeCopied, exportRangePng, copyRange,
       state, snippet, snapshotTip: SNAPSHOT_TIP,
       sel, cls, deltaClass, usedPct, committedPct, miniCanvas, deselect, openIde, viewSource, fmtTs,
       rangeStart, rangeEnd, range, rangePartial, hasSelection, panelTitle,

@@ -40,7 +40,7 @@ import java.util.regex.Pattern;
  * live UI is unchanged: it still loads the module files and the unpkg import map.
  *
  * <h3>Data</h3>
- * The profile is a JSON object {@code {points, references, sources, meta}} in
+ * The profile is a JSON object {@code {points, references, gaps, sources, meta}} in
  * {@code <script type="application/json" id="profile-data">}. Every string in it
  * has {@code < > &} written as {@code \\uXXXX}, so no label can close the
  * element. A small classic script parses it into {@code window.__PROFILE__}
@@ -58,6 +58,12 @@ public final class HtmlExporter {
     public int sourceContextLines = 6;
     /** Export timestamp; null = now. Fixed in tests. */
     public Long exportedAt;
+    /** Thousands separators for numbers inside mark labels in the marks table. */
+    public boolean formatLabelNumbers;
+    /** Segments between marks ({@code "1:2,2:4"}) shown as brackets; automatic callouts are always added. */
+    public String segments;
+    /** GC overhead shading threshold (percent of wall time, 0 = off). */
+    public int gcOverheadPct = GcPressure.DEFAULT_THRESHOLD_PCT;
   }
 
   static final String VUE_RESOURCE = "web/vendor/vue.esm-browser.prod.js";
@@ -67,8 +73,12 @@ public final class HtmlExporter {
   private static final Pattern IMPORT_SPECIFIER =
       Pattern.compile("(\\bfrom\\s*|\\bimport\\s*\\(?\\s*)(['\"])(\\.{1,2}/[^'\"]+)\\2");
 
-  private static volatile String cachedHead;
-  private static volatile String cachedImportMap;
+  static final String VIEWER_PAGE = "viewer.html";
+  private static final java.util.concurrent.ConcurrentHashMap<String, String> PAGE_CACHE =
+      new java.util.concurrent.ConcurrentHashMap<String, String>();
+  private static final java.util.concurrent.ConcurrentHashMap<String, String> IMPORT_MAP_CACHE =
+      new java.util.concurrent.ConcurrentHashMap<String, String>();
+  private static final Pattern IMPORTS_VUE = Pattern.compile("\\bfrom\\s*['\"]vue['\"]");
 
   private HtmlExporter() {}
 
@@ -92,12 +102,14 @@ public final class HtmlExporter {
     ExportMeta meta = src.meta().copy();
     stats.applyTo(meta);
     meta.exportedAt = opts.exportedAt != null ? opts.exportedAt.longValue() : System.currentTimeMillis();
+    if (opts.formatLabelNumbers) meta.formatLabelNumbers = true;
+    GapRule.Result gaps = stats.gaps(meta.intervalMs);
 
     String[] template = template();
     Writer w = new BufferedWriter(new OutputStreamWriter(out, StandardCharsets.UTF_8), 1 << 16);
     w.write(template[0].replace("@@TITLE@@", escapeHtml(meta.effectiveTitle() + " — memory profile")));
     w.write("<script type=\"application/json\" id=\"profile-data\">");
-    writeData(w, src, stats, meta, opts);
+    writeData(w, src, stats, gaps, meta, opts);
     w.write("</script>\n");
     w.write("<script>window.__PROFILE__ = JSON.parse(document.getElementById('profile-data').textContent);</script>\n");
     w.write(template[1]);
@@ -106,8 +118,8 @@ public final class HtmlExporter {
 
   // ---- data ----
 
-  private static void writeData(final Writer w, PointSource src, ProfileStats stats, ExportMeta meta,
-                                Options opts) throws IOException {
+  private static void writeData(final Writer w, PointSource src, ProfileStats stats, GapRule.Result gaps,
+                                ExportMeta meta, Options opts) throws IOException {
     w.write("{\"points\":[");
     final StringBuilder sb = new StringBuilder(256);
     final boolean[] first = {true};
@@ -139,11 +151,35 @@ public final class HtmlExporter {
       if (i > 0) sb.append(',');
       appendPoint(sb, refs.get(i));
     }
-    sb.append("],\"sources\":");
+    sb.append("],\"gaps\":");
+    gaps.appendJson(sb);
+    appendAnalysis(sb, stats, gaps, opts.gcOverheadPct, opts.segments);
+    sb.append(",\"sources\":");
     appendSources(sb, stats.annotated, opts);
     sb.append(",\"meta\":").append(meta.toJson());
     sb.append('}');
     w.write(sb.toString());
+  }
+
+  /**
+   * {@code ,"gcPressure":{…},"segments":[…]}: GC overhead regions and the
+   * segment brackets (user segments plus the largest increase and release), for
+   * the viewer. Shared with the live {@code /data}.
+   */
+  static void appendAnalysis(StringBuilder sb, ProfileStats stats, GapRule.Result gaps, int gcPct, String segments) {
+    sb.append(",\"gcPressure\":");
+    GcPressure.of(stats, gaps, gcPct).appendJson(sb);
+    List<Annotations.Row> rows = Annotations.rows(stats.annotated, stats.firstTs);
+    GapRule.GcTime gc = stats.gapInput.gcTime();
+    List<Segments.Segment> segs = new ArrayList<Segments.Segment>();
+    try {
+      segs.addAll(Segments.parse(segments, rows, gc));
+    } catch (IllegalArgumentException ignored) {
+      // a segment whose marks are not (yet) there: skip it
+    }
+    segs.addAll(Segments.callouts(rows, gc));
+    sb.append(",\"segments\":");
+    Segments.appendJson(sb, segs);
   }
 
   /** Same keys as {@link DataPoint#toJsonLine()}, with HTML-safe string escaping. */
@@ -161,6 +197,8 @@ public final class HtmlExporter {
     if (p.deltaMB != null) sb.append(",\"deltaMB\":").append(p.deltaMB);
     if (p.durationMs != null) sb.append(",\"durationMs\":").append(p.durationMs);
     if (p.threadName != null) { sb.append(",\"thread\":"); MiniJson.quote(sb, p.threadName); }
+    if (p.gcMs != null) sb.append(",\"gcMs\":").append(p.gcMs);
+    if (p.gcTotalMs != null) sb.append(",\"gcTotalMs\":").append(p.gcTotalMs);
     sb.append('}');
   }
 
@@ -263,10 +301,19 @@ public final class HtmlExporter {
 
   /** [0] = everything up to the data block, [1] = everything after it. */
   private static String[] template() throws IOException {
-    String head = cachedHead;
+    return template(VIEWER_PAGE, ENTRY_MODULE);
+  }
+
+  /**
+   * A page with its modules inlined (see the class comment), split at the data
+   * slot. Used for the viewer and for the run comparison page.
+   */
+  static String[] template(String page, String entryModule) throws IOException {
+    String key = page + "|" + entryModule;
+    String head = PAGE_CACHE.get(key);
     if (head == null) {
-      head = buildTemplate();
-      cachedHead = head;
+      head = buildTemplate(page, entryModule);
+      PAGE_CACHE.put(key, head);
     }
     int cut = head.indexOf(DATA_SLOT);
     return new String[] {head.substring(0, cut), head.substring(cut + DATA_SLOT.length())};
@@ -274,18 +321,24 @@ public final class HtmlExporter {
 
   private static final String DATA_SLOT = "@@DATA@@";
 
-  private static String buildTemplate() throws IOException {
-    String html = resourceText("viewer.html");
-    String css = resourceText("web/styles.css");
-    if (css.contains("</style")) throw new IOException("styles.css must not contain </style");
+  private static final String STYLESHEET = "<link rel=\"stylesheet\" href=\"/web/styles.css\">";
 
-    html = replaceOnce(html, "<title>Java Memory Profiler</title>",
-        "<title>@@TITLE@@</title>\n<link rel=\"icon\" href=\"data:,\">");
-    html = replaceOnce(html, "<link rel=\"stylesheet\" href=\"/web/styles.css\">",
-        "<style>\n" + css + "\n</style>\n" + THEME_SCRIPT);
-    html = replaceBlock(html, "<!-- export:importmap -->", "<!-- /export:importmap -->", importMap());
+  private static String buildTemplate(String page, String entryModule) throws IOException {
+    String html = resourceText(page);
+    int a = html.indexOf("<title>"), b = html.indexOf("</title>");
+    if (a < 0 || b < a) throw new IOException(page + ": <title> not found");
+    html = html.substring(0, a) + "<title>@@TITLE@@</title>\n<link rel=\"icon\" href=\"data:,\">"
+        + html.substring(b + "</title>".length());
+    if (html.contains(STYLESHEET)) {
+      String css = resourceText("web/styles.css");
+      if (css.contains("</style")) throw new IOException("styles.css must not contain </style");
+      html = replaceOnce(html, STYLESHEET, "<style>\n" + css + "\n</style>\n" + THEME_SCRIPT);
+    } else {
+      html = replaceOnce(html, "</head>", THEME_SCRIPT + "</head>");
+    }
+    html = replaceBlock(html, "<!-- export:importmap -->", "<!-- /export:importmap -->", importMap(entryModule));
     html = replaceBlock(html, "<!-- export:entry -->", "<!-- /export:entry -->",
-        DATA_SLOT + "<script type=\"module\">import '" + BARE_PREFIX + ENTRY_MODULE + "';</script>");
+        DATA_SLOT + "<script type=\"module\">import '" + BARE_PREFIX + entryModule + "';</script>");
     return html;
   }
 
@@ -296,17 +349,23 @@ public final class HtmlExporter {
       + "document.documentElement.setAttribute('data-theme',t);})();</script>\n";
 
   static String importMap() throws IOException {
-    String cached = cachedImportMap;
+    return importMap(ENTRY_MODULE);
+  }
+
+  /** The import map for every module reachable from {@code entryModule}; Vue only when a module imports it. */
+  static String importMap(String entryModule) throws IOException {
+    String cached = IMPORT_MAP_CACHE.get(entryModule);
     if (cached != null) return cached;
     TreeMap<String, String> entries = new TreeMap<String, String>();
-    entries.put("vue", dataUrl(resourceText(VUE_RESOURCE)));
+    boolean usesVue = false;
     Deque<String> queue = new ArrayDeque<String>();
-    queue.add(ENTRY_MODULE);
+    queue.add(entryModule);
     while (!queue.isEmpty()) {
       String module = queue.poll();
       String key = BARE_PREFIX + module;
       if (entries.containsKey(key)) continue;
       String src = resourceText(module);
+      if (IMPORTS_VUE.matcher(src).find()) usesVue = true;
       StringBuffer rewritten = new StringBuffer(src.length() + 256);
       Matcher m = IMPORT_SPECIFIER.matcher(src);
       while (m.find()) {
@@ -318,6 +377,7 @@ public final class HtmlExporter {
       m.appendTail(rewritten);
       entries.put(key, dataUrl(rewritten.toString()));
     }
+    if (usesVue) entries.put("vue", dataUrl(resourceText(VUE_RESOURCE)));
     StringBuilder sb = new StringBuilder(512 * 1024);
     sb.append("<script type=\"importmap\">\n{\"imports\":{");
     boolean first = true;
@@ -329,8 +389,9 @@ public final class HtmlExporter {
       MiniJson.quote(sb, e.getValue());
     }
     sb.append("\n}}\n</script>");
-    cachedImportMap = sb.toString();
-    return cachedImportMap;
+    String map = sb.toString();
+    IMPORT_MAP_CACHE.put(entryModule, map);
+    return map;
   }
 
   /** Module names reachable from the entry module (for tests). */

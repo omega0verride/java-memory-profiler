@@ -105,6 +105,20 @@ final class Annotations {
     return rows;
   }
 
+  private static final Pattern LONG_NUMBER = Pattern.compile("(?<![\\d.,])\\d{5,}(?![.,]\\d)");
+
+  /** Thousands separators for integers of five or more digits inside a label: "1250000 rows" → "1,250,000 rows". */
+  static String formatNumbers(String text) {
+    if (text == null) return null;
+    Matcher m = LONG_NUMBER.matcher(text);
+    StringBuffer sb = new StringBuffer(text.length() + 8);
+    while (m.find()) {
+      m.appendReplacement(sb, Matcher.quoteReplacement(String.format(java.util.Locale.US, "%,d", Long.parseLong(m.group()))));
+    }
+    m.appendTail(sb);
+    return sb.toString();
+  }
+
   private static String stripLeadingZeros(String digits) {
     int i = 0;
     while (i < digits.length() - 1 && digits.charAt(i) == '0') i++;
