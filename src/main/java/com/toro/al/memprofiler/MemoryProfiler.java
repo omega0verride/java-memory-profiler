@@ -1,7 +1,9 @@
 package com.toro.al.memprofiler;
 
 import java.awt.Desktop;
+import java.io.File;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryUsage;
 import java.lang.reflect.InvocationHandler;
@@ -30,6 +32,10 @@ import java.util.function.Consumer;
  *
  *   Job j = MemoryProfiler.wrap(Job.class, new JobImpl());   // @Profile methods
  *
+ *   MemoryProfiler.referenceLine(5120, "Production heap limit (5 GB)");
+ *   MemoryProfiler.exportHtml("build/profile.html");         // offline, interactive
+ *   MemoryProfiler.exportPng("build/profile.png");           // static image of the whole run
+ *
  *   MemoryProfiler.stop();
  * </pre>
  */
@@ -56,6 +62,13 @@ public final class MemoryProfiler {
     String heapDumpDir = System.getProperty("java.io.tmpdir");
     String heapDumpOpener = null;   // "system", "visualvm", or "intellij"
     String heapDumpOpenerPath = null; // custom binary path for the opener
+    String title = null;
+    String subtitle = null;
+    String exportHtmlOnStop = null;
+    String exportPngOnStop = null;
+    PngOptions exportPngOptions = null;
+    int exportMaxSamples = 20000;
+    int exportSourceLines = 6;
 
     public static Config defaults() { return new Config(); }
 
@@ -112,6 +125,38 @@ public final class MemoryProfiler {
     public Config heapDumpOpener(String opener) { return heapDumpOpener(opener, null); }
 
     public String[] sourceRoots() { return sourceRoots.clone(); }
+
+    /** Chart title for exports (default: the process name). */
+    public Config title(String v) { this.title = v; return this; }
+
+    /** Chart subtitle for exports (default: process name, PID and start time). */
+    public Config subtitle(String v) { this.subtitle = v; return this; }
+
+    /** Writes an interactive HTML export to {@code path} on {@link #stop()} and {@link #shutdown()}. */
+    public Config exportHtmlOnStop(String path) { this.exportHtmlOnStop = path; return this; }
+
+    /** Writes a PNG of the whole run to {@code path} on {@link #stop()} and {@link #shutdown()}. */
+    public Config exportPngOnStop(String path) { return exportPngOnStop(path, null); }
+
+    /** Like {@link #exportPngOnStop(String)} with image options (null = defaults). */
+    public Config exportPngOnStop(String path, PngOptions options) {
+      this.exportPngOnStop = path;
+      this.exportPngOptions = options;
+      return this;
+    }
+
+    /**
+     * HTML exports keep at most this many SAMPLE points (default 20,000); above
+     * it samples are reduced with min/max per bucket so peaks survive. Marks,
+     * scopes, GC events and heap dumps are always kept.
+     */
+    public Config exportMaxSamples(int v) { this.exportMaxSamples = Math.max(100, v); return this; }
+
+    /**
+     * Lines of source embedded above and below each mark in HTML exports when
+     * {@link #sourceRoots} resolve the file (default 6, 0 = none).
+     */
+    public Config exportSourceLines(int v) { this.exportSourceLines = Math.max(0, v); return this; }
   }
 
   public final class Scope implements AutoCloseable {
@@ -152,9 +197,15 @@ public final class MemoryProfiler {
   private ProfilerServer server;
   private final AtomicLong scopeCounter = new AtomicLong(0);
   private final Map<String, Scope> openScopes = new HashMap<String, Scope>();
+  private volatile String title;
+  private volatile String subtitle;
+  /** Next store index when the on-stop exports last ran (-1 = never); avoids writing twice for stop() + shutdown(). */
+  private long onStopExportedAt = -1;
 
   private MemoryProfiler(Config config) {
     this.config = config;
+    this.title = config.title;
+    this.subtitle = config.subtitle;
     this.store = new DataStore(config.maxPoints);
     this.autoGc = new AutoGcController(store, config.gcPasses, config.gcPauseMs);
     if (config.autoGcNearPeak) this.autoGc.setNearPeakEnabled(true);
@@ -188,6 +239,7 @@ public final class MemoryProfiler {
       if (config.startServer) {
         int port = config.port > 0 ? config.port : findFreePort();
         p.server = new ProfilerServer(port, p.store, p.autoGc, p.heapDumper, config.sourceRoots);
+        p.server.setExports(p);
         p.server.start();
         String url = "http://localhost:" + port + "/";
         System.out.println("[memprofiler] live UI at " + url);
@@ -218,6 +270,7 @@ public final class MemoryProfiler {
     INSTANCE.sampler.stop();
     INSTANCE.gcListener.stop();
     INSTANCE.store.flush();
+    INSTANCE.runOnStopExports();
     System.out.println("[memprofiler] profiling stopped – UI still available");
   }
 
@@ -249,6 +302,7 @@ public final class MemoryProfiler {
     if (INSTANCE == null) return;
     INSTANCE.sampler.stop();
     INSTANCE.gcListener.stop();
+    INSTANCE.runOnStopExports();
     if (INSTANCE.server != null) INSTANCE.server.stop();
     INSTANCE.store.close();
     INSTANCE = null;
@@ -424,6 +478,150 @@ public final class MemoryProfiler {
         });
   }
 
+  // ---- reference lines and title ----
+
+  /**
+   * Adds a dashed horizontal reference line to the chart and the exports, for
+   * example {@code referenceLine(5120, "Production heap limit (5 GB)")}. It is
+   * also written to the JSONL file (kind {@code REFERENCE}), so exports made
+   * later from that file show it.
+   */
+  public static void referenceLine(long mb, String label) {
+    MemoryProfiler p = INSTANCE;
+    if (p == null) return;
+    MemoryUsage heap = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage();
+    CallerInfo caller = callerInfo();
+    p.store.add(new DataPoint(
+        p.store.nextIndex(),
+        System.currentTimeMillis(),
+        mb,
+        HeapSampler.toMB(heap.getCommitted()),
+        HeapSampler.toMB(heap.getMax()),
+        DataPoint.Kind.REFERENCE,
+        label,
+        caller.display,
+        caller.sourceFile,
+        null,
+        null,
+        null,
+        Thread.currentThread().getName()));
+  }
+
+  /** Sets the chart title used by the exports (the subtitle stays process, PID and start time). */
+  public static void title(String title) {
+    MemoryProfiler p = INSTANCE;
+    if (p != null) p.title = title;
+  }
+
+  /** Sets the chart title and subtitle used by the exports. */
+  public static void title(String title, String subtitle) {
+    MemoryProfiler p = INSTANCE;
+    if (p == null) return;
+    p.title = title;
+    p.subtitle = subtitle;
+  }
+
+  // ---- exports ----
+
+  /**
+   * Writes a self-contained, interactive HTML file of the profile so far
+   * (works while running and after {@link #stop()}). The file opens offline
+   * from disk or as an attachment.
+   *
+   * @return the absolute path written
+   * @throws IllegalStateException if the profiler is not running
+   * @throws UncheckedIOException if the file cannot be written
+   */
+  public static String exportHtml(String path) {
+    MemoryProfiler p = requireInstance("exportHtml");
+    try {
+      return HtmlExporter.export(p.pointSource(), p.htmlOptions(), new File(path)).getAbsolutePath();
+    } catch (IOException e) {
+      throw new UncheckedIOException("HTML export to " + path + " failed", e);
+    }
+  }
+
+  /** Writes a PNG of the whole run so far with default options. See {@link #exportPng(String, PngOptions)}. */
+  public static String exportPng(String path) {
+    return exportPng(path, null);
+  }
+
+  /**
+   * Writes a static PNG of the whole run (or the range in {@code options}) with
+   * numbered mark badges, scope bands and reference lines.
+   *
+   * @return the absolute path written
+   * @throws IllegalStateException if the profiler is not running
+   * @throws UncheckedIOException if the file cannot be written
+   */
+  public static String exportPng(String path, PngOptions options) {
+    MemoryProfiler p = requireInstance("exportPng");
+    try {
+      return PngRenderer.render(p.pointSource(), options, new File(path)).getAbsolutePath();
+    } catch (IOException e) {
+      throw new UncheckedIOException("PNG export to " + path + " failed", e);
+    }
+  }
+
+  private static MemoryProfiler requireInstance(String what) {
+    MemoryProfiler p = INSTANCE;
+    if (p == null) {
+      throw new IllegalStateException("MemoryProfiler." + what + ": profiler is not running "
+          + "(call it before shutdown(), or use Config.exportHtmlOnStop / exportPngOnStop)");
+    }
+    return p;
+  }
+
+  /** The live store as an export source, with the current title and process details. */
+  PointSource pointSource() {
+    ExportMeta m = new ExportMeta();
+    m.title = title;
+    m.subtitle = subtitle;
+    m.processName = ProfilerServer.currentProcessName();
+    m.pid = ProfilerServer.currentPid();
+    m.intervalMs = config.intervalMs;
+    m.source = "live";
+    return new PointSource.Store(store, m);
+  }
+
+  HtmlExporter.Options htmlOptions() {
+    HtmlExporter.Options o = new HtmlExporter.Options();
+    o.maxSamples = config.exportMaxSamples;
+    o.sourceRoots = config.sourceRoots.clone();
+    o.sourceContextLines = config.exportSourceLines;
+    return o;
+  }
+
+  private void runOnStopExports() {
+    if (config.exportHtmlOnStop == null && config.exportPngOnStop == null) return;
+    long mark = store.peekNextIndex();
+    if (mark == onStopExportedAt) return;
+    onStopExportedAt = mark;
+    if (config.exportHtmlOnStop != null) {
+      try {
+        File f = HtmlExporter.export(pointSource(), htmlOptions(), new File(config.exportHtmlOnStop));
+        System.out.println("[memprofiler] HTML export written to " + f.getAbsolutePath());
+      } catch (Throwable t) {
+        System.err.println("[memprofiler] HTML export to " + config.exportHtmlOnStop + " failed: " + t);
+      }
+    }
+    if (config.exportPngOnStop != null) {
+      try {
+        File f = PngRenderer.render(pointSource(), config.exportPngOptions, new File(config.exportPngOnStop));
+        System.out.println("[memprofiler] PNG export written to " + f.getAbsolutePath());
+      } catch (Throwable t) {
+        System.err.println("[memprofiler] PNG export to " + config.exportPngOnStop + " failed: " + t);
+      }
+    }
+  }
+
+  /** The profiler version from the jar manifest, or "dev" when running from classes. */
+  public static String version() {
+    Package pkg = MemoryProfiler.class.getPackage();
+    String v = pkg == null ? null : pkg.getImplementationVersion();
+    return v != null ? v : "dev";
+  }
+
   // ---- heap dumps ----
 
   /**
@@ -502,7 +700,8 @@ public final class MemoryProfiler {
       String cn = e.getClassName();
       if (cn.equals(MemoryProfiler.class.getName())) continue;
       if (cn.startsWith("java.lang.Thread")) continue;
-      if (cn.startsWith("com.toro.al.memprofiler.")) continue;
+      // the profiler's own frames; the bundled Demo is user code for this purpose
+      if (cn.startsWith("com.toro.al.memprofiler.") && !cn.startsWith("com.toro.al.memprofiler.Demo")) continue;
       // Skip reflection / proxy / lambda machinery
       if (cn.startsWith("sun.reflect.")) continue;
       if (cn.startsWith("jdk.internal.reflect.")) continue;
@@ -539,6 +738,7 @@ public final class MemoryProfiler {
 
   private static void openBrowser(String url) {
     try {
+      Headless.markAwtUsed();
       if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
         Desktop.getDesktop().browse(new URI(url));
       }

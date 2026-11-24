@@ -1,4 +1,5 @@
 import { reactive } from 'vue';
+import { BAND_AREA } from './annotations.js';
 
 export const state = reactive({
   points: [],
@@ -28,6 +29,19 @@ export const state = reactive({
   heapDumps: [],
   heapDumpOpener: 'system',
   heapDumpBusy: false,
+  // snapshot (exported HTML) and annotations
+  snapshot: false,      // true inside an exported HTML file: no server, no polling
+  meta: null,           // snapshot metadata (title, pid, start, duration, version, export time)
+  references: [],       // REFERENCE points: user-defined horizontal lines
+  sources: {},          // sourceFile -> { file, line, start, lines[] } (snapshot only)
+  intervalMs: 0,
+  version: null,
+  annotations: false,   // mark badges, scope bands, reference lines and the marks table
+  marksCollapsed: false,
+  theme: 'dark',
+  exportMenuOpen: false,
+  pngIncludeTable: true,
+  toast: null,
 });
 
 export const VIEW = {
@@ -35,7 +49,8 @@ export const VIEW = {
   MAX_SPAN_MS: 24 * 3600 * 1000,
   PAD_L: 50,
   PAD_R: 10,
-  PAD_T: 12,
+  // Room for two rows of scope-band titles above the plot when annotations are on.
+  get PAD_T() { return state.annotations ? 12 + BAND_AREA : 12; },
   PAD_B: 26,
 };
 
@@ -59,7 +74,19 @@ export function freezeView() {
   return range;
 }
 
+/** Shows the whole run (the initial view of a snapshot). */
+export function fitAll() {
+  const pts = state.points;
+  if (!pts.length) return;
+  const a = pts[0].timestamp, b = pts[pts.length - 1].timestamp;
+  const pad = Math.max(250, (b - a) * 0.01);
+  state.autoscroll = false;
+  state.customTMin = a - pad;
+  state.customTMax = b + pad;
+}
+
 export function resetView() {
+  if (state.snapshot) { fitAll(); return; }
   state.customTMin = null;
   state.customTMax = null;
   state.viewWindowMs = 60 * 1000;

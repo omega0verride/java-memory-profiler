@@ -12,22 +12,48 @@ src/main/resources/
   viewer.html              # shell: import map, mount point, loads /web/app.js
   web/
     styles.css             # all CSS (one file for now, no scoped styles)
-    state.js               # reactive store (points, selection, view, autogc, heapDumps)
-    api.js                 # fetch wrappers for /data, /mark, /gc, /autogc, /heapdump, /heapdumps
+    state.js               # reactive store (points, selection, view, autogc, heapDumps, snapshot, annotations, theme)
+    api.js                 # data source (live polling or embedded snapshot) + fetch wrappers + export helpers
     util.js                # tiny shared helpers (fmtTs, kindClass)
-    chart.js               # canvas renderer + pointer/wheel handlers
+    annotations.js         # badge numbering, marks rows, scope bands, badge/title layout (mirrors Annotations.java)
+    chart.js               # canvas renderer + pointer/wheel handlers + annotation layers
+    vendor/
+      vue.esm-browser.prod.js  # Vue 3.4.38, inlined into HTML exports only (MIT, see LICENSE-vue.txt)
     components/
       Summary.js           # current-heap panel + heap dump controls
-      Selected.js          # selected-point detail panel
+      Selected.js          # selected-point detail panel (+ source snippet in snapshots)
       Events.js            # event list panel
-      Overlay.js           # in-chart floating controls (follow/zoom/pause)
+      Overlay.js           # in-chart floating controls (marks/follow/zoom/pause)
       ContextMenu.js       # right-click menu component
+      HoverCard.js         # hover popover (+ mark label and snippet)
+      HoverHeader.js       # detail bar above the chart
+      MarksTable.js        # marks table under the chart (annotations on)
     app.js                 # root component, wires modules + polling
 ```
 
 `ProfilerServer` serves anything under `/web/...` as a static resource. Drop a
 new file in and it's reachable. The import map in `viewer.html` resolves the
 bare specifier `vue` so any module can `import { ref } from 'vue'`.
+
+## Snapshot mode (exported HTML)
+
+`HtmlExporter` inlines `styles.css`, turns every module reachable from
+`app.js` into a `data:` URL in an import map (relative imports are rewritten
+to `@memprofiler/web/...`), and embeds the profile as JSON. In the page,
+`window.__PROFILE__` is set before the modules run; `api.js` then exports
+`SNAPSHOT = true` and a `dataSource` that reads the embedded data and never
+polls. Live-only calls in `api.js` resolve to `null` in a snapshot.
+
+Rules for code that must also work in a snapshot:
+
+- Get data through `dataSource`, never `fetch('/...')` directly.
+- Gate live-only controls on `state.snapshot` (hide them, or disable them
+  with `SNAPSHOT_TIP` from `util.js` as the tooltip).
+- Import other modules with relative paths (`'./x.js'`, `'../x.js'`); the
+  exporter only rewrites those, and a new module is picked up automatically.
+- Colours come from CSS variables (`:root` and `:root[data-theme="light"]`),
+  so the canvas follows the theme. Keep `annotations.js` and
+  `Annotations.java` in step: the PNG export uses the same rules.
 
 ## Adding a feature
 

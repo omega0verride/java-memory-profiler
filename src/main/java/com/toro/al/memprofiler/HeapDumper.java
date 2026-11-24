@@ -135,6 +135,7 @@ final class HeapDumper {
           launchProcess(resolveIntelliJ(), f.getAbsolutePath());
           break;
         default:
+          Headless.markAwtUsed();
           if (java.awt.Desktop.isDesktopSupported()) {
             java.awt.Desktop.getDesktop().open(f);
           }

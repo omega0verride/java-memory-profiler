@@ -45,8 +45,19 @@ public class HeapSampler {
 
   public synchronized void stop() {
     running = false;
-    if (thread != null) thread.interrupt();
+    Thread t = thread;
     thread = null;
+    if (t == null) return;
+    t.interrupt();
+    // Let a sample that is already being taken land before stop() returns, so
+    // whatever runs next (the on-stop exports) sees the final data.
+    if (t != Thread.currentThread()) {
+      try {
+        t.join(1000);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    }
   }
 
   public void sampleOnce() {

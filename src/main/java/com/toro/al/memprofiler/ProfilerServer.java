@@ -26,6 +26,7 @@ public class ProfilerServer {
   private final String[] sourceRoots;
   private final int port;
   private String cachedHtml;
+  private volatile MemoryProfiler exports;
 
   public ProfilerServer(int port, DataStore store) throws IOException {
     this(port, store, null, null, new String[0]);
@@ -46,11 +47,14 @@ public class ProfilerServer {
     this.heapDumper = heapDumper;
     this.sourceRoots = sourceRoots == null ? new String[0] : sourceRoots.clone();
     this.server = HttpServer.create(new InetSocketAddress(port), 0);
-    this.server.setExecutor(Executors.newFixedThreadPool(2));
+    this.server.setExecutor(Executors.newFixedThreadPool(4));
     this.server.createContext("/", new Handler());
   }
 
   public void start() { server.start(); }
+
+  /** Lets {@code /export/*} use the profiler's title, sampling interval and export options. */
+  void setExports(MemoryProfiler profiler) { this.exports = profiler; }
 
   public void stop() { server.stop(0); }
 
@@ -92,6 +96,10 @@ public class ProfilerServer {
           handleLayoutCompile(ex);
         } else if ("/class/source".equals(path)) {
           handleClassSource(ex);
+        } else if ("/export/html".equals(path)) {
+          handleExportHtml(ex);
+        } else if ("/export/png".equals(path)) {
+          handleExportPng(ex);
         } else if ("/source.html".equals(path)) {
           serveResource(ex, "/source.html", "text/html; charset=utf-8");
         } else if (path.startsWith("/web/")) {
@@ -185,6 +193,10 @@ public class ProfilerServer {
     sb.append(",\"pid\":").append(currentPid());
     sb.append(",\"processName\":");
     appendStringOrNull(sb, currentProcessName());
+    sb.append(",\"intervalMs\":").append(exports != null ? exports.config().intervalMs : 0);
+    sb.append(",\"version\":");
+    appendStringOrNull(sb, MemoryProfiler.version());
+    appendReferences(sb);
     sb.append(",\"points\":[");
     List<DataPoint> snap = store.snapshot();
     for (int i = 0; i < snap.size(); i++) {
@@ -198,7 +210,9 @@ public class ProfilerServer {
   private void serveSince(HttpExchange ex) throws IOException {
     long after = parseLong(ex.getRequestURI().getQuery(), "index", -1);
     StringBuilder sb = new StringBuilder();
-    sb.append("{\"maxObservedMB\":").append(store.maxObservedMB()).append(",\"points\":[");
+    sb.append("{\"maxObservedMB\":").append(store.maxObservedMB());
+    appendReferences(sb);
+    sb.append(",\"points\":[");
     List<DataPoint> pts = store.since(after);
     for (int i = 0; i < pts.size(); i++) {
       if (i > 0) sb.append(',');
@@ -206,6 +220,81 @@ public class ProfilerServer {
     }
     sb.append("]}");
     write(ex, 200, "application/json", sb.toString());
+  }
+
+  private void appendReferences(StringBuilder sb) {
+    sb.append(",\"references\":[");
+    List<DataPoint> refs = store.references();
+    for (int i = 0; i < refs.size(); i++) {
+      if (i > 0) sb.append(',');
+      sb.append(refs.get(i).toJsonLine());
+    }
+    sb.append(']');
+  }
+
+  private PointSource exportSource() {
+    MemoryProfiler p = exports;
+    if (p != null) return p.pointSource();
+    ExportMeta m = new ExportMeta();
+    m.processName = currentProcessName();
+    m.pid = currentPid();
+    return new PointSource.Store(store, m);
+  }
+
+  private void handleExportHtml(HttpExchange ex) throws IOException {
+    HtmlExporter.Options opts;
+    if (exports != null) {
+      opts = exports.htmlOptions();
+    } else {
+      opts = new HtmlExporter.Options();
+      opts.sourceRoots = sourceRoots.clone();
+    }
+    String name = "profile-" + ExportMeta.fileSafeProcess(currentProcessName()) + "-"
+        + ExportMeta.fileStamp(System.currentTimeMillis()) + ".html";
+    HtmlExporter.importMap(); // fail before the headers go out if a resource is missing
+    ex.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
+    ex.getResponseHeaders().set("Content-Disposition", "attachment; filename=\"" + name + "\"");
+    ex.getResponseHeaders().set("Cache-Control", "no-store");
+    ex.sendResponseHeaders(200, 0);
+    OutputStream os = ex.getResponseBody();
+    try {
+      HtmlExporter.export(exportSource(), opts, os);
+    } finally {
+      os.close();
+    }
+  }
+
+  private void handleExportPng(HttpExchange ex) throws IOException {
+    String q = ex.getRequestURI().getQuery();
+    PngOptions opts = PngOptions.defaults();
+    String[] keys = {"width", "height", "scale", "from", "to", "fromMark", "toMark", "theme",
+        "includeTable", "title", "clock", "committed", "gcTicks"};
+    for (String k : keys) {
+      String v = parseString(q, k);
+      if (v != null && !opts.set(k, v)) {
+        write(ex, 400, "text/plain", "bad value for " + k + ": " + v);
+        return;
+      }
+    }
+    java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream(512 * 1024);
+    try {
+      PngRenderer.render(exportSource(), opts, buf);
+    } catch (IllegalArgumentException e) {
+      write(ex, 400, "text/plain", e.getMessage());
+      return;
+    }
+    byte[] bytes = buf.toByteArray();
+    boolean download = "true".equalsIgnoreCase(parseString(q, "download"));
+    String name = "profile-" + ExportMeta.fileSafeProcess(currentProcessName()) + "-"
+        + ExportMeta.fileStamp(System.currentTimeMillis()) + ".png";
+    ex.getResponseHeaders().set("Content-Type", "image/png");
+    ex.getResponseHeaders().set("Content-Disposition",
+        (download ? "attachment" : "inline") + "; filename=\"" + name + "\"");
+    ex.getResponseHeaders().set("Cache-Control", "no-store");
+    ex.sendResponseHeaders(200, bytes.length);
+    OutputStream os = ex.getResponseBody();
+    os.write(bytes);
+    os.close();
   }
 
   private void serveFile(HttpExchange ex) throws IOException {
@@ -267,6 +356,7 @@ public class ProfilerServer {
       return;
     }
     try {
+      Headless.markAwtUsed();
       Desktop.getDesktop().open(f);
       write(ex, 200, "text/plain", "ok");
     } catch (Throwable t) {
@@ -515,7 +605,7 @@ public class ProfilerServer {
     try { return Long.parseLong(v); } catch (NumberFormatException e) { return dflt; }
   }
 
-  private static long currentPid() {
+  static long currentPid() {
     try {
       String name = ManagementFactory.getRuntimeMXBean().getName();
       int at = name.indexOf('@');
@@ -525,7 +615,7 @@ public class ProfilerServer {
     }
   }
 
-  private static String currentProcessName() {
+  static String currentProcessName() {
     String cmd = System.getProperty("sun.java.command");
     if (cmd == null || cmd.isEmpty()) return null;
     int sp = cmd.indexOf(' ');

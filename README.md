@@ -13,6 +13,7 @@ precise, repeatable measurements at the points that matter.
 >
 > ```
 > java -cp java-memory-profiler-1.0.0.jar com.toro.al.memprofiler.Demo
+> java -jar java-memory-profiler-1.0.0.jar --export docs   # headless: writes docs/demo-profile.html and .png
 > ```
 
 - **Continuous sampling** — a daemon thread records heap usage every N ms.
@@ -24,6 +25,9 @@ precise, repeatable measurements at the points that matter.
 - **Java agent** — attach with `-javaagent:...` to start the profiler before `main()` runs, zero code changes.
 - **Live web UI** — real-time line chart, marker overlays, event list, click-to-open source.
 - **JSONL output** — every data point is appended to an optional `.jsonl` file for post-mortem analysis.
+- **Mark annotations** — numbered badges on marks, scope bands, reference lines and a marks table, so a chart reads without hovering.
+- **Export interactive HTML** — one self-contained `.html` file of the run that opens offline (from disk, email or a Jira attachment) with zoom, hover and the marks table. [Example](docs/demo-profile.html) (download it and open it locally).
+- **Export PNG** — a static image of the whole run with the annotations, for bug reports. [Example](docs/demo-profile.png).
 
 ## API overview
 
@@ -55,10 +59,19 @@ Iface wrapped = MemoryProfiler.wrap(Iface.class, impl);
 // Heap dumps
 MemoryProfiler.heapDump("after-load");             // records .hprof with given name
 MemoryProfiler.heapDump();                          // auto-generated name
+
+// Chart annotations and exports
+MemoryProfiler.referenceLine(5120, "Production heap limit (5 GB)"); // dashed line, also in the JSONL
+MemoryProfiler.title("Cache loader: full load");    // chart title for exports
+MemoryProfiler.exportHtml("build/profile.html");    // self-contained, interactive, offline
+MemoryProfiler.exportPng("build/profile.png");      // static image of the whole run
+MemoryProfiler.exportPng("build/peak.png", PngOptions.defaults().fromMark("5").toMark("8").includeTable(true));
 ```
 
 Every method is safe to call before `start()` or after `stop()`/`shutdown()` — marks/scopes
-become no-ops instead of throwing.
+become no-ops instead of throwing. The exceptions are `exportHtml` / `exportPng`, which
+work while running and after `stop()`, but throw `IllegalStateException` after
+`shutdown()` (use `exportHtmlOnStop` / `exportPngOnStop` to export on the way out).
 
 ### Lifecycle: `stop` vs `shutdown` vs `await`
 
@@ -96,8 +109,13 @@ MemoryProfiler.start(MemoryProfiler.Config.defaults()
     .autoGcNearPeak(true)            // auto-GC when heap nears observed peak (default false)
     .autoGcThreshold(true, 1024)     // auto-GC when heap exceeds threshold in MB (default false)
     .sourceRoots("src/main/java",    // resolve class locations to files for "Open in IDE"
-                 "src/test/java")
-    .forceGc(3, 80));                // System.gc() loop used by markGc/scopeGc
+                 "src/test/java")    //   and source snippets in HTML exports
+    .forceGc(3, 80)                  // System.gc() loop used by markGc/scopeGc
+    .title("Cache loader")           // chart title for exports (default: process name)
+    .exportHtmlOnStop("build/profile.html")   // written on stop() and shutdown()
+    .exportPngOnStop("build/profile.png")     // optional PngOptions as 2nd argument
+    .exportMaxSamples(20_000)        // HTML exports: SAMPLE points kept (min/max downsampling)
+    .exportSourceLines(6));          // HTML exports: lines of source around each mark
 ```
 
 #### Heap dump configuration
@@ -215,12 +233,23 @@ method names 1:1.**
 | `autoGcNearPeak` | `false` | Trigger `System.gc()` when heap nears the observed peak. |
 | `autoGcThreshold` | `false` | Trigger `System.gc()` when heap exceeds a fixed MB threshold. |
 | `autoGcThresholdMB` | —   | Threshold in MB for `autoGcThreshold`.                     |
-| `sourceRoots`  | none    | Comma-separated source roots for "Open in IDE" resolution. |
+| `sourceRoots`  | none    | Source roots separated by `;` ("Open in IDE", snippets in HTML exports). |
+| `title`        | process | Chart title for exports.                                   |
+| `exportHtml`   | none    | Write an interactive HTML export here when the JVM exits.  |
+| `exportPng`    | none    | Write a PNG of the whole run here when the JVM exits.      |
+| `png.<option>` | —       | Any [PNG option](#png-options), e.g. `png.includeTable=true,png.theme=dark`. |
+| `exportMaxSamples` | `20000` | SAMPLE points kept in HTML exports.                    |
 | `heapDumpDir`  | tmpdir  | Directory where `.hprof` heap dumps are saved.             |
 | `heapDumpOpener` | `system` | How to open dumps: `system`, `visualvm`, or `intellij`.  |
 | `heapDumpOpenerPath` | auto | Path to the opener binary (VisualVM / IntelliJ).       |
 
-A shutdown hook calls `shutdown()` to flush the JSONL file and stop the server on JVM exit. When
+```
+java -javaagent:java-memory-profiler-1.0.0.jar=exportHtml=C:/tmp/profile.html,exportPng=C:/tmp/profile.png,png.includeTable=true ^
+     -cp your-app.jar com.example.Main
+```
+
+A shutdown hook calls `shutdown()` to flush the JSONL file, write the
+`exportHtml` / `exportPng` files and stop the server on JVM exit. When
 attached, you can still call `MemoryProfiler.mark/scope/...` from code — the
 agent just bootstraps the singleton early.
 
@@ -264,6 +293,155 @@ Opens at the URL printed on startup (`http://localhost:<port>/`).
   in the configured tool (VisualVM, IntelliJ, or the OS default).
 
   ![Heap dumps panel](screenshots/heap-dumps.png)
+
+## Mark annotations
+
+Marks are easier to discuss when they have numbers. The live chart (the
+**marks** toggle in the chart's control bar), the HTML export and the PNG
+export all draw the same annotations with the same rules:
+
+- **Badges.** Every `MARK`, `SCOPE_START` and `SCOPE_END` is a dot at its
+  `usedMB` with a numbered badge above it. A label that starts with
+  `<number>. ` shows that number: `markGc("7. DB cache: all rows in one batch (peak)")`
+  gets badge **7**. Numbers may repeat (several `6.` progress marks each get
+  their own **6** badge). Points without a number are numbered in order,
+  starting after the highest explicit number in the run, so the two never
+  share a badge. (`"7.5 GB loaded"` is not numbered: the dot must be followed
+  by a space.)
+- **Collision avoidance.** Badges are placed in time order. A badge that
+  would touch an earlier one moves up one slot at a time and gets a thin
+  leader line to its dot; at the top of the plot it tries the slots below;
+  if nothing is free it is hidden (the PNG key says how many). Badges never
+  overlap each other or the reference-line labels, and never leave the plot.
+- **Marks table.** `#`, label (without the number prefix), retained MB,
+  delta to the previous row, elapsed seconds, `Class.method:line` and thread.
+  In the browser, clicking a row selects the point and centres the chart on it.
+- **Scope bands.** Each `scope()` / `scopeGc()` pair is a light, neutral band
+  across the plot with its label above the plot. Titles of narrow, adjacent
+  bands go on two alternating rows; a title that does not fit is shortened
+  with "…" or left out. Titles never overlap.
+- **Reference lines.** A dashed line for the JVM max heap (or an "off scale"
+  note when it is far above the data) and one per
+  `MemoryProfiler.referenceLine(mb, label)`. Reference lines are stored as
+  `REFERENCE` points, so exports made later from the JSONL file show them.
+
+The rules live in `Annotations.java` (PNG) and `web/annotations.js` (browser),
+which mirror each other. `markGc` readings are taken after a forced full GC,
+which is what the PNG key calls "retained heap"; plain `mark` readings include
+garbage.
+
+## Export interactive HTML
+
+One self-contained `.html` file that reproduces the viewer for a finished (or
+running) profile, offline: no server and no network access. Double-click it,
+attach it to an email or a Jira ticket. **[Example generated from the demo](docs/demo-profile.html)**
+(download it and open it locally; GitHub shows the source).
+
+What the file contains:
+
+- The whole run, initially zoomed to fit, with zoom (wheel), pan (drag),
+  crosshair, hover card and a **reset zoom** button.
+- The Summary, Events, Selected and range panels working on the embedded data.
+- Mark badges, scope bands, reference lines and the marks table.
+- A header with the title, process, PID, JVM max heap, start time, duration,
+  profiler version and export time.
+- Light and dark themes: the file follows the OS setting; the header toggle
+  overrides it.
+- Optional **source snippets**: when `sourceRoots` resolve a mark's source
+  file, ±6 lines around the mark are embedded and shown in the hover card and
+  the Selected panel.
+- Live-only controls (GC, add mark, auto-GC, heap dump, open in IDE, object
+  layout) are hidden or disabled with a tooltip that says the page is a snapshot.
+
+| Entry point | Usage |
+|-------------|-------|
+| UI          | **Export HTML** button in the header: downloads `profile-<process>-<yyyyMMdd-HHmmss>.html` |
+| HTTP        | `GET /export/html` (sent as an attachment) |
+| Java        | `MemoryProfiler.exportHtml("build/profile.html")`, while running or after `stop()` |
+| Config      | `.exportHtmlOnStop("build/profile.html")` writes it on `stop()` and `shutdown()` |
+| Agent       | `-javaagent:java-memory-profiler.jar=exportHtml=C:/tmp/profile.html` |
+| CLI (offline) | `java -jar java-memory-profiler.jar export --jsonl run.jsonl --html out.html` |
+
+CLI options for HTML:
+
+| Option | Default | Meaning |
+|--------|---------|---------|
+| `--jsonl <file>` | required | JSONL written with `Config.jsonl(...)` or the `jsonl=` agent argument |
+| `--run last\|all\|<n>` | `last` | A JSONL file can hold several appended runs; a new run starts where `index` goes back to 0. `all` joins them (renumbered). `--list-runs` prints them. |
+| `--title <text>` / `--subtitle <text>` | file name | Header text |
+| `--source-roots <a;b>` | none | Roots for embedded source snippets |
+| `--source-lines <n>` | `6` | Lines of context above and below each mark |
+| `--max-samples <n>` | `20000` | SAMPLE points kept |
+
+**How it is built.** At export time each ES module reachable from
+`web/app.js` is read from the jar, its relative imports (`'./state.js'`) are
+rewritten to bare names (`'@memprofiler/web/state.js'`), and it is embedded
+as a `data:text/javascript;base64,…` URL in an import map. Vue 3.4.38 is
+vendored in the jar (`web/vendor/vue.esm-browser.prod.js`, MIT, with its
+licence header and `LICENSE-vue.txt`) and mapped the same way; the CSS is
+inlined. The live UI is unchanged: it still loads the separate module files
+and Vue from unpkg. The profile is embedded as
+`<script type="application/json" id="profile-data">` with every `<`, `>` and
+`&` inside strings written as `\u003c` etc., so labels such as `</script>`
+stay text. `api.js` reads it as `window.__PROFILE__` and never polls.
+
+**Size.** Every non-SAMPLE point is kept. When there are more SAMPLE points
+than `exportMaxSamples`, they are split into equal buckets and each bucket
+keeps its lowest and highest reading (plus the first and last sample), so
+peaks survive. A 10-minute run sampled every 250 ms is under 1 MB. Two exports
+of the same data are byte-identical except for `exportedAt`.
+
+## Export PNG
+
+A static image of the **whole run** (or a time range), rendered in Java2D,
+so the API, the CLI and CI produce the same image without a browser.
+
+![PNG export of the demo](docs/demo-profile.png)
+
+The image has the title and subtitle, a y axis in MB or GB with round ticks,
+an elapsed `m:ss` x axis (or wall-clock time), the heap line with a light
+fill (each output pixel column keeps its first, last, lowest and highest
+sample, so a one-sample spike still shows), mark dots and numbered badges,
+scope bands with titles, reference lines, GC events as ticks under the x
+axis, a one-line key, and optionally the marks table under the chart.
+
+| Entry point | Usage |
+|-------------|-------|
+| UI          | **Export PNG** menu in the header: download or copy to the clipboard, for the full run or the current view, with or without the marks table. The image is rendered by the server at full resolution, not grabbed from the screen. |
+| HTTP        | `GET /export/png?width=&height=&scale=&from=&to=&fromMark=&toMark=&theme=&includeTable=&title=` (`download=true` sends it as an attachment) |
+| Java        | `MemoryProfiler.exportPng("heap.png")`, `MemoryProfiler.exportPng("heap.png", PngOptions.defaults().includeTable(true))` |
+| Config      | `.exportPngOnStop("heap.png")` or `.exportPngOnStop("heap.png", options)` |
+| Agent       | `exportPng=C:/tmp/profile.png`, plus `png.<option>=value` |
+| CLI (offline) | `java -jar java-memory-profiler.jar export --jsonl run.jsonl --png out.png --include-table --from-mark 5 --to-mark 8` |
+
+#### PNG options
+
+| `PngOptions` / query | CLI | Default | Meaning |
+|----------------------|-----|---------|---------|
+| `width`        | `--width`   | `1400`  | Image width in logical pixels |
+| `height`       | `--height`  | `640`   | Plot height; title, axis, key and table are added |
+| `scale`        | `--scale`   | `2`     | Pixel density (the PNG is `width × scale` pixels wide) |
+| `from` / `to`  | `--from` / `--to` | whole run | Epoch ms, or ms since the first point when below 10^11 |
+| `fromMark` / `toMark` | `--from-mark` / `--to-mark` | — | From the first mark with this badge to the last mark with that badge (a small margin is added) |
+| `theme`        | `--theme`   | `light` | `light` or `dark` |
+| `includeTable` | `--include-table` | `false` | Draw the marks table under the chart |
+| `title`        | `--title`   | profiler title | Chart title |
+| `clockAxis` (`clock`) | `--clock` | `false` | Wall-clock `HH:mm:ss` x axis instead of elapsed `m:ss` |
+| `committed`    | `--committed` | `false` | Also draw the committed heap line |
+| `gcTicks`      | `--no-gc-ticks` | `true` | GC events as ticks under the x axis |
+
+Notes:
+
+- Before rendering, `java.awt.headless` is set to `true` unless it is already
+  set or AWT is already running in the process (the host application is not
+  changed then). Text uses the logical `SansSerif` font, so the JDK's default
+  fonts are enough.
+- The exporters read the live store in place (under its lock, without copying
+  it) or stream the JSONL file. A 20,000-point run at `scale=2` renders in
+  about one second and allocates about 35 MB.
+- Exports cover what is in the in-memory buffer (`maxPoints`). For longer
+  runs, enable `jsonl` and export from the file with the CLI.
+- Output is deterministic for the same input and options.
 
 ## Object layout analyzer
 
@@ -349,6 +527,7 @@ Each data point is one JSON object:
 | `GC`          | `GarbageCollectorMXBean` notification     | `label` = gcAction, `location` = `gcName / gcCause`, `deltaMB` = reclaimed, `durationMs` = pause |
 | `HEAP_DUMP`   | `MemoryProfiler.heapDump(...)` / UI button | `label` = dump name, `location` = path to `.hprof` file |
 | `AUTO_GC`     | `AutoGcController` (threshold or near-peak trigger) | `label` = trigger reason, `location` = `AutoGcController` |
+| `REFERENCE`   | `MemoryProfiler.referenceLine(mb, label)` | `usedMB` = the line's value, `label` = its caption. Not a heap reading: it is kept out of `/data` points and the chart line, and served as `references`. Readers that do not know the kind skip it. |
 
 Downstream tooling can tail the JSONL.
 

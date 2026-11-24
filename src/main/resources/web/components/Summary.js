@@ -1,6 +1,7 @@
 import { computed, ref, onMounted, onUnmounted } from 'vue';
 import { state, selectPoint, ensureVisible, clearSelection } from '../state.js';
 import * as api from '../api.js';
+import { SNAPSHOT_TIP } from '../util.js';
 
 const RADIUS = 40;
 const C = 2 * Math.PI * RADIUS;
@@ -8,7 +9,14 @@ const C = 2 * Math.PI * RADIUS;
 export default {
   template: `
     <div class="panel summary">
-      <div class="summary-top">
+      <div v-if="state.snapshot" class="summary-top snapshot-note">
+        <div class="panel-title"><span>Snapshot</span></div>
+        <p class="snapshot-text" :title="snapshotTip">
+          Exported from the profiler. Zoom, hover, selection and ranges work;
+          live controls (GC, marks, auto-GC, heap dumps, open in IDE) are not available.
+        </p>
+      </div>
+      <div v-if="!state.snapshot" class="summary-top">
         <div class="panel-title"><span>GC Controls</span></div>
         <div class="gc-controls">
           <button class="gc-trigger-btn" @click="forceGc" title="Force System.gc() now">
@@ -63,8 +71,8 @@ export default {
             </svg>
             Range Select
           </button>
-          <button class="tool-btn" @click="openLayoutTab"
-                  title="Analyze the memory layout of a Java class (opens new tab)">
+          <button class="tool-btn" @click="openLayoutTab" :disabled="state.snapshot"
+                  :title="state.snapshot ? snapshotTip : 'Analyze the memory layout of a Java class (opens new tab)'">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/>
             </svg>
@@ -73,7 +81,7 @@ export default {
         </div>
       </div>
 
-      <div class="summary-dumps">
+      <div v-if="!state.snapshot" class="summary-dumps">
         <div class="panel-title"><span>Heap Dumps</span></div>
         <div class="dump-row">
           <button class="gc-trigger-btn" @click="takeHeapDump" :disabled="state.heapDumpBusy"
@@ -114,8 +122,8 @@ export default {
 
       <div class="summary-bottom">
         <div class="panel-title">
-          <span>Current Heap</span>
-          <span v-if="!state.paused" class="live-indicator"></span>
+          <span>{{ state.snapshot ? 'End of run' : 'Current Heap' }}</span>
+          <span v-if="!state.paused && !state.snapshot" class="live-indicator"></span>
         </div>
       <div v-if="last" class="usage-donut-wrap">
         <svg class="usage-donut" viewBox="0 0 100 100" :title="usageTitle">
@@ -200,6 +208,7 @@ export default {
     const forceGc = () => api.forceGc();
 
     const openLayoutTab = () => {
+      if (state.snapshot) return;
       window.open('/layout.html', '_blank');
     };
 
@@ -321,6 +330,7 @@ export default {
     });
 
     return {
+      snapshotTip: SNAPSHOT_TIP,
       state, last, thresholdInput, thresholdPresets, dumpsOpen, dumpToggleEl, dropdownStyle, toggleDumps,
       forceGc, toggleNearPeak, toggleThreshold, toggleRangeMode, openLayoutTab,
       usagePct, usedLen, committedLen, dashArray, pctText, usageClass, usageTitle,

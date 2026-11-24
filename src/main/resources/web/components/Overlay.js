@@ -18,11 +18,18 @@ export default {
   template: `
     <div class="ctrl-top-bar">
       <div class="seg-bar">
-        <button class="seg" :class="{ active: autoscroll }" @click="toggleFollow" title="Follow latest data">
+        <button class="seg" :class="{ active: state.annotations }" @click="toggleAnnotations"
+                title="Mark badges, scope bands, reference lines and the marks table">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
+            <rect x="2" y="2" width="9" height="7" rx="3.5"/><path d="M6.5 9v3"/><circle cx="6.5" cy="13.5" r="1.3" fill="currentColor"/>
+          </svg>
+          <span>marks</span>
+        </button>
+        <button v-if="!state.snapshot" class="seg" :class="{ active: autoscroll }" @click="toggleFollow" title="Follow latest data">
           <svg width="10" height="10" viewBox="0 0 10 10"><circle cx="5" cy="5" r="5" fill="currentColor"/></svg>
           <span>live</span>
         </button>
-        <button class="seg" :class="{ active: state.paused }" @click="togglePause" title="Pause data collection">
+        <button v-if="!state.snapshot" class="seg" :class="{ active: state.paused }" @click="togglePause" title="Pause data collection">
           <svg v-if="!state.paused" width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
             <rect x="3" y="2" width="3.5" height="12" rx="1"/><rect x="9.5" y="2" width="3.5" height="12" rx="1"/>
           </svg>
@@ -31,11 +38,11 @@ export default {
           </svg>
           <span>{{ pauseLabel }}</span>
         </button>
-        <button class="seg" @click="reset" title="Reset view and resume following">
+        <button class="seg" @click="reset" :title="state.snapshot ? 'Reset zoom to the whole run' : 'Reset view and resume following'">
           <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M2 8a6 6 0 0111.47-2.47"/><path d="M14 8a6 6 0 01-11.47 2.47"/><path d="M13.5 2v3.5H10"/><path d="M2.5 14v-3.5H6"/>
           </svg>
-          <span>reset</span>
+          <span>{{ state.snapshot ? 'reset zoom' : 'reset' }}</span>
         </button>
       </div>
     </div>
@@ -143,6 +150,7 @@ export default {
       resetView(); 
       resetYScale();
     },
-    togglePause() { state.paused = !state.paused; }
+    togglePause() { state.paused = !state.paused; },
+    toggleAnnotations() { state.annotations = !state.annotations; }
   }
 };

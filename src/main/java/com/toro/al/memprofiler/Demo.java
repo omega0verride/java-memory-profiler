@@ -13,6 +13,12 @@ import java.util.concurrent.*;
  * - Multi-threaded allocation patterns
  * - Memory leak simulation
  * - Bursty allocation / release cycles
+ * - Numbered marks, a reference line and the HTML / PNG exports
+ *
+ * <pre>
+ *   java -jar java-memory-profiler.jar                 # live UI, waits for Enter
+ *   java -jar java-memory-profiler.jar --export docs   # headless: writes docs/demo-profile.html and .png
+ * </pre>
  */
 public class Demo {
 
@@ -96,34 +102,53 @@ public class Demo {
   // ─── Main ──────────────────────────────────────────────────────────────────
 
   public static void main(String[] args) throws Exception {
+    // --export <dir>: run headless and write the HTML and PNG exports into <dir>
+    String exportDir = null;
+    for (int i = 0; i < args.length; i++) {
+      if ("--export".equals(args[i]) && i + 1 < args.length) exportDir = args[++i];
+    }
+    boolean headless = exportDir != null;
+    String tmp = System.getProperty("java.io.tmpdir");
 
     // Full configuration demonstrating all options
-    MemoryProfiler.start(MemoryProfiler.Config.defaults()
+    MemoryProfiler.Config config = MemoryProfiler.Config.defaults()
         .intervalMs(200)                           // fast sampling
         .maxPoints(50_000)                         // large ring buffer
         .port(9090)                                // fixed port
-        .jsonl("C:/temp/memprofiler-demo.jsonl")   // persistent log
-        .openBrowser(true)                         // launch browser
-        .startServer(true)                         // web UI
+        .jsonl(headless ? tmp + "/memprofiler-demo-export.jsonl"
+                        : "C:/temp/memprofiler-demo.jsonl")   // persistent log
+        .openBrowser(!headless)                    // launch browser
+        .startServer(!headless)                    // web UI
         .gcListener(true)                          // capture GC events
         .autoGcNearPeak(true)                      // auto-GC near peak
-        .autoGcThreshold(true, 100)                // auto-GC above 400 MB
-        .sourceRoots("src/main/java")              // for "Open in IDE"
-        .heapDumpDir("C:/temp/dumps")              // heap dump output
+        .autoGcThreshold(true, 100)                // auto-GC above 100 MB
+        .sourceRoots("src/main/java")              // "Open in IDE" and source snippets in HTML exports
+        .heapDumpDir(headless ? tmp : "C:/temp/dumps") // heap dump output
         .heapDumpOpener("system")                  // open with OS default
         .forceGc(3, 80)                            // gc loop for markGc/scopeGc
-    );
+        .title("Demo: pipeline, cache and burst allocations");
+    if (headless) {
+      new java.io.File(tmp + "/memprofiler-demo-export.jsonl").delete();
+      config.exportHtmlOnStop(exportDir + "/demo-profile.html")
+            .exportPngOnStop(exportDir + "/demo-profile.png", PngOptions.defaults().includeTable(true));
+    }
+    MemoryProfiler.start(config);
 
     System.out.println("=== Java Memory Profiler Demo ===");
-    System.out.println("Web UI: http://localhost:9090/");
+    if (!headless) System.out.println("Web UI: http://localhost:9090/");
     System.out.println();
+
+    // A dashed line on the chart and in the exports
+    MemoryProfiler.referenceLine(160, "Service heap budget (160 MB)");
 
     // Wrap the pipeline interface for annotation-driven profiling
     DataPipeline pipeline = MemoryProfiler.wrap(DataPipeline.class, new DataPipelineImpl());
     LeakyCache cache = new LeakyCache();
 
     // ── Phase 1: Baseline ────────────────────────────────────────────────────
-    MemoryProfiler.markGc("baseline");
+    // Marks whose label starts with "<number>." get that number as their badge in
+    // the chart and the exports; a number may repeat (progress marks).
+    MemoryProfiler.markGc("1. Baseline");
     Thread.sleep(1000);
 
     // ── Phase 2: Pipeline processing with @Profile scopes ────────────────────
@@ -132,12 +157,12 @@ public class Demo {
         List<byte[]> raw = pipeline.ingest(50, 64);       // 50 records × 64 KB = ~3.2 MB
         List<byte[]> transformed = pipeline.transform(raw); // doubles → ~6.4 MB spike
         pipeline.persist(transformed);                     // retains 5 records (leak)
-        MemoryProfiler.mark("batch-" + batch + "-done");
+        MemoryProfiler.mark("2. Pipeline batch " + (batch + 1) + " of 4 done");
         Thread.sleep(500);
       }
     }
 
-    MemoryProfiler.markGc("after-pipeline");
+    MemoryProfiler.markGc("3. After pipeline (5 records per batch leaked)");
     Thread.sleep(500);
 
     // ── Phase 3: Cache growth (simulated memory leak) ────────────────────────
@@ -145,13 +170,13 @@ public class Demo {
       for (int i = 0; i < 200; i++) {
         cache.put("entry-" + i, 32);  // 32 KB each → ~6.4 MB total
         if (i % 50 == 0) {
-          MemoryProfiler.mark("cache-size-" + cache.size());
+          MemoryProfiler.mark("4. Cache size " + cache.size());
         }
         Thread.sleep(20);
       }
     }
 
-    MemoryProfiler.markGc("cache-full");
+    MemoryProfiler.markGc("5. Cache full (200 x 32 KB)");
 
     // ── Phase 4: Partial eviction ────────────────────────────────────────────
     try (MemoryProfiler.Scope phase = MemoryProfiler.scopeGc("phase-4-eviction")) {
@@ -159,10 +184,10 @@ public class Demo {
       Thread.sleep(300);
     }
 
-    MemoryProfiler.markGc("after-eviction");
+    MemoryProfiler.markGc("6. After evicting half the cache");
 
     // ── Phase 5: Multi-threaded burst allocation ─────────────────────────────
-    MemoryProfiler.mark("mt-burst-start");
+    MemoryProfiler.mark("7. Multi-thread burst start");
     ExecutorService pool = Executors.newFixedThreadPool(4);
     List<Future<List<byte[]>>> futures = new ArrayList<>();
 
@@ -187,12 +212,12 @@ public class Demo {
     }
     pool.shutdown();
 
-    MemoryProfiler.markGc("mt-burst-allocated");
+    MemoryProfiler.markGc("8. Burst allocated (4 x 5 MB)");
     Thread.sleep(500);
 
     // Release multi-threaded allocations
     allResults.clear();
-    MemoryProfiler.markGc("mt-burst-released");
+    MemoryProfiler.markGc("9. Burst released");
     Thread.sleep(500);
 
     // ── Phase 6: Large object allocation stress ──────────────────────────────
@@ -200,13 +225,13 @@ public class Demo {
       List<byte[]> large = new ArrayList<>();
       for (int i = 0; i < 5; i++) {
         large.add(new byte[20 * 1024 * 1024]); // 20 MB each
-        MemoryProfiler.mark("large-" + (i + 1) + "-allocated");
+        MemoryProfiler.mark("10. Large block " + (i + 1) + " allocated (20 MB)");
         Thread.sleep(300);
       }
       // Release one at a time
       for (int i = large.size() - 1; i >= 0; i--) {
         large.remove(i);
-        MemoryProfiler.markGc("large-" + (i + 1) + "-freed");
+        MemoryProfiler.markGc("11. Large block " + (i + 1) + " freed");
         Thread.sleep(200);
       }
     }
@@ -214,11 +239,12 @@ public class Demo {
     // ── Phase 7: Cleanup and heap dump ───────────────────────────────────────
     pipeline.cleanup();
     cache.evict(cache.size());
-    MemoryProfiler.markGc("all-cleaned");
+    MemoryProfiler.markGc("12. All cleaned");
     Thread.sleep(500);
 
     // Record heap dump for offline analysis
-    MemoryProfiler.heapDump("demo-final");
+    String dump = MemoryProfiler.heapDump("demo-final");
+    if (headless && dump != null) new java.io.File(dump).delete(); // keep the marker, not the .hprof
 
     // ── Phase 8: Object layout analysis (print to console) ───────────────────
     System.out.println();
@@ -232,6 +258,11 @@ public class Demo {
       }
     }
     System.out.println();
+
+    if (headless) {
+      MemoryProfiler.shutdown(); // writes the on-stop exports
+      return;
+    }
 
     System.out.println("Demo complete. Press Enter to stop profiling (UI stays up)...");
     System.in.read();

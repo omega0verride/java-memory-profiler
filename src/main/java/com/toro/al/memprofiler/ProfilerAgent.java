@@ -8,6 +8,7 @@ import java.lang.instrument.Instrumentation;
  * <pre>
  *   -javaagent:java-memory-profiler-1.0.0.jar
  *   -javaagent:java-memory-profiler-1.0.0.jar=intervalMs=250,jsonl=C:/tmp/heap.jsonl,port=9090,openBrowser=false
+ *   -javaagent:java-memory-profiler-1.0.0.jar=exportHtml=C:/tmp/profile.html,exportPng=C:/tmp/profile.png
  * </pre>
  *
  * Agent args are comma-separated {@code key=value} pairs. Keys mirror the
@@ -24,6 +25,12 @@ import java.lang.instrument.Instrumentation;
  *   <li>{@code heapDumpDir}  — directory for .hprof heap dumps (default java.io.tmpdir)</li>
  *   <li>{@code heapDumpOpener} — how to open dumps: system, visualvm, or intellij (default system)</li>
  *   <li>{@code heapDumpOpenerPath} — path to the opener binary (default auto-detect)</li>
+ *   <li>{@code sourceRoots}  — source roots, separated by {@code ;} (Open in IDE, HTML snippets)</li>
+ *   <li>{@code title}        — chart title for exports</li>
+ *   <li>{@code exportHtml}   — write an interactive HTML export here when the JVM exits</li>
+ *   <li>{@code exportPng}    — write a PNG of the whole run here when the JVM exits</li>
+ *   <li>{@code png.<option>} — PNG options, e.g. {@code png.includeTable=true,png.theme=dark,png.width=1600}</li>
+ *   <li>{@code exportMaxSamples} — SAMPLE points kept in HTML exports (default 20000)</li>
  * </ul>
  */
 public final class ProfilerAgent {
@@ -49,6 +56,8 @@ public final class ProfilerAgent {
     MemoryProfiler.Config cfg = MemoryProfiler.Config.defaults();
     boolean autoGcThreshold = false;
     long autoGcThresholdMB = 0;
+    String exportPng = null;
+    PngOptions pngOptions = PngOptions.defaults();
     if (agentArgs != null && agentArgs.length() > 0) {
       for (String pair : agentArgs.split(",")) {
         int eq = pair.indexOf('=');
@@ -68,9 +77,16 @@ public final class ProfilerAgent {
         else if ("heapDumpDir".equals(k)) cfg.heapDumpDir(v);
         else if ("heapDumpOpener".equals(k)) cfg.heapDumpOpener(v);
         else if ("heapDumpOpenerPath".equals(k)) cfg.heapDumpOpener(cfg.heapDumpOpener, v);
+        else if ("sourceRoots".equals(k)) cfg.sourceRoots(v.split(";"));
+        else if ("title".equals(k))      cfg.title(v);
+        else if ("exportHtml".equals(k)) cfg.exportHtmlOnStop(v);
+        else if ("exportPng".equals(k))  exportPng = v;
+        else if ("exportMaxSamples".equals(k)) cfg.exportMaxSamples(Integer.parseInt(v));
+        else if (k.startsWith("png.")) pngOptions.set(k.substring(4), v);
       }
     }
     if (autoGcThreshold) cfg.autoGcThreshold(true, autoGcThresholdMB);
+    if (exportPng != null) cfg.exportPngOnStop(exportPng, pngOptions);
     MemoryProfiler.start(cfg);
     Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
       public void run() { try { MemoryProfiler.shutdown(); } catch (Throwable ignored) {} }

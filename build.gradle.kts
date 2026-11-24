@@ -23,6 +23,20 @@ repositories {
 
 dependencies {
   implementation("org.benf:cfr:0.152")
+
+  testImplementation("org.junit.jupiter:junit-jupiter:5.12.2")
+  testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+}
+
+tasks.test {
+  useJUnitPlatform()
+  systemProperty("java.awt.headless", "true")
+  maxHeapSize = "512m"
+  testLogging {
+    events("failed")
+    exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+    showStandardStreams = false
+  }
 }
 
 tasks.withType<JavaCompile>().configureEach {
@@ -33,7 +47,9 @@ tasks.jar {
   archiveBaseName.set("java-memory-profiler")
   manifest {
     attributes(
-      "Main-Class" to "com.toro.al.memprofiler.Demo",
+      "Main-Class" to "com.toro.al.memprofiler.Cli",
+      "Implementation-Title" to "java-memory-profiler",
+      "Implementation-Version" to project.version,
       "Premain-Class" to "com.toro.al.memprofiler.ProfilerAgent",
       "Agent-Class" to "com.toro.al.memprofiler.ProfilerAgent",
       "Can-Redefine-Classes" to "true",

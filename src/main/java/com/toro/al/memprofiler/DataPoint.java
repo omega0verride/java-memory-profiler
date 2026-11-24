@@ -9,7 +9,14 @@ public class DataPoint {
     SCOPE_END,
     GC,
     HEAP_DUMP,
-    AUTO_GC
+    AUTO_GC,
+    /**
+     * A user-defined horizontal reference line ({@link MemoryProfiler#referenceLine}).
+     * {@code usedMB} holds the line's value and {@code label} its caption. Kept out of
+     * the sample stream by {@link DataStore}; it only travels through the JSONL file and
+     * the {@code references} arrays of {@code /data} and the exports.
+     */
+    REFERENCE
   }
 
   public final long index;

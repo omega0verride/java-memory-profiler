@@ -1,7 +1,7 @@
 import { computed, ref, watchEffect, onMounted, onUnmounted } from 'vue';
 import { state, clearSelection, selectPoint, ensureVisible } from '../state.js';
 import { openLocation } from '../api.js';
-import { fmtTs, kindClass } from '../util.js';
+import { fmtTs, kindClass, SNAPSHOT_TIP } from '../util.js';
 
 const MINI_CHART_WINDOW = 30; // number of points to show on each side
 
@@ -185,14 +185,32 @@ export default {
 
         <div v-if="sel.location" class="selected-location">
           <div class="location-path">{{ sel.location }}</div>
-          <a href="#" class="location-link" @click.prevent="openIde">Open in IDE</a>
-          <a href="#" class="location-link" @click.prevent="viewSource" title="View decompiled source of this class">View Source</a>
+          <template v-if="!state.snapshot">
+            <a href="#" class="location-link" @click.prevent="openIde">Open in IDE</a>
+            <a href="#" class="location-link" @click.prevent="viewSource" title="View decompiled source of this class">View Source</a>
+          </template>
+          <template v-else>
+            <span class="location-link disabled" :title="snapshotTip">Open in IDE</span>
+            <span class="location-link disabled" :title="snapshotTip">View Source</span>
+          </template>
+        </div>
+
+        <div v-if="snippet" class="selected-snippet">
+          <div class="snippet-file">{{ snippet.file }}:{{ snippet.line }}</div>
+          <pre class="code-snippet"><code><span v-for="(l, i) in snippet.lines" :key="i"
+            class="code-line" :class="{ hl: snippet.start + i === snippet.line }"><span class="ln">{{ snippet.start + i }}</span>{{ l }}
+</span></code></pre>
         </div>
       </div>
     </div>
   `,
   setup() {
     const sel = computed(() => state.selected);
+    const snippet = computed(() => {
+      const s = state.selected;
+      if (!s || !s.sourceFile || !state.sources) return null;
+      return state.sources[s.sourceFile] || null;
+    });
     const rangeStart = computed(() => state.rangeStart);
     const rangeEnd = computed(() => state.rangeEnd);
     const range = computed(() => state.rangeStart && state.rangeEnd);
@@ -501,6 +519,7 @@ export default {
     });
 
     return {
+      state, snippet, snapshotTip: SNAPSHOT_TIP,
       sel, cls, deltaClass, usedPct, committedPct, miniCanvas, deselect, openIde, viewSource, fmtTs,
       rangeStart, rangeEnd, range, rangePartial, hasSelection, panelTitle,
       startCls, endCls, rangeStats,
